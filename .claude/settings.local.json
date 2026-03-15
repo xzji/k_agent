@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(npx tsc:*)",
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "Bash(npm run clean:*)",
+      "Bash(npx @mariozechner/jiti:*)",
+      "Bash(npx tsx:*)",
+      "Bash(ls:*)",
+      "Bash(chmod:*)",
+      "Bash(./run-dev.sh:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(node:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsgo:*)",
+      "Bash(shx:*)",
+      "Bash(npm run copy-assets:*)",
+      "WebSearch",
+      "Bash(npx nodemon:*)",
+      "Bash(pkill:*)"
+    ]
+  }
+}
