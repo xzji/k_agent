@@ -22,7 +22,9 @@
       "Bash(npx nodemon:*)",
       "Bash(pkill:*)",
       "Bash(npm test:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(cp:*)",
+      "Bash(npx vitest:*)"
     ]
   }
 }

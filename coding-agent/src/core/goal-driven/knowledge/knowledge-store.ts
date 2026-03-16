@@ -1,198 +1,525 @@
 /**
- * KnowledgeStore — Long-term memory for the goal-driven agent
+ * Knowledge Store
  *
- * Stores:
- * - Weak-relevance information filtered by RelevanceJudge
- * - Shelved action plan context
- * - Execution byproducts not directly pushed to user
- * - Cross-activated discoveries
- *
- * P0: Basic save/search/list. P4 adds cross-activation.
+ * JSON-based knowledge persistence with goal-scoped knowledge reuse.
+ * Supports knowledge retrieval for tasks and injection into prompts.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { createHash } from "node:crypto";
-import type { KnowledgeEntry } from "../types.js";
-import { generateId } from "../utils.js";
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import {
+  type KnowledgeEntry,
+  type KnowledgeQueryOptions,
+  type Task,
+  type IKnowledgeStore,
+} from '../types';
+import { generateId, now, calculateSimilarity, extractKeywords, deepClone } from '../utils';
 
-export class KnowledgeStore {
-	private entries: KnowledgeEntry[] = [];
-	private dataDir: string;
-	private contentHashes: Set<string> = new Set(); // Track content hashes for deduplication
+/**
+ * Storage directory configuration
+ */
+const STORAGE_DIR = process.env.GOAL_DRIVEN_STORAGE || '~/.pi/agent/goal-driven';
 
-	constructor(dataDir: string) {
-		this.dataDir = join(dataDir, "knowledge");
-		this.ensureDir();
-		this.loadFromDisk();
-	}
+/**
+ * Knowledge storage structure
+ */
+interface KnowledgeStorage {
+  entries: KnowledgeEntry[];
+  version: number;
+  lastUpdated: number;
+}
 
-	/**
-	 * Save a new knowledge entry (with deduplication)
-	 */
-	save(params: {
-		content: string;
-		source: KnowledgeEntry["source"];
-		relatedGoalIds: string[];
-		relatedDimensionIds?: string[];
-		tags?: string[];
-		supplementNeeded?: string;
-	}): KnowledgeEntry | null {
-		// Generate content hash for deduplication
-		const contentHash = this.generateContentHash(params.content);
+/**
+ * Knowledge Store implementation with goal-scoped retrieval
+ */
+export class KnowledgeStore implements IKnowledgeStore {
+  private baseDir: string;
+  private cache: Map<string, KnowledgeEntry> = new Map();
+  private dirty = false;
 
-		// Check for duplicate content
-		if (this.contentHashes.has(contentHash)) {
-			// Find and update existing entry instead of creating duplicate
-			const existingEntry = this.entries.find(e => this.generateContentHash(e.content) === contentHash);
-			if (existingEntry) {
-				// Merge related goal IDs and dimension IDs
-				const mergedGoalIds = [...new Set([...existingEntry.relatedGoalIds, ...params.relatedGoalIds])];
-				const mergedDimensionIds = [...new Set([...existingEntry.relatedDimensionIds, ...(params.relatedDimensionIds ?? [])])];
+  constructor(baseDir: string = STORAGE_DIR) {
+    this.baseDir = baseDir.replace('~', process.env.HOME || '');
+  }
 
-				// Update entry if there are new associations
-				if (mergedGoalIds.length !== existingEntry.relatedGoalIds.length ||
-					mergedDimensionIds.length !== existingEntry.relatedDimensionIds.length) {
-					existingEntry.relatedGoalIds = mergedGoalIds;
-					existingEntry.relatedDimensionIds = mergedDimensionIds;
-					this.persistAllToDisk();
-				}
+  /**
+   * Initialize storage
+   */
+  async init(): Promise<void> {
+    const knowledgeDir = path.dirname(this.getStoragePath());
+    await fs.mkdir(knowledgeDir, { recursive: true });
+    await this.loadFromDisk();
+  }
 
-				return existingEntry; // Return existing entry, null indicates no new entry created
-			}
-		}
+  /**
+   * Get storage file path
+   */
+  private getStoragePath(): string {
+    return path.join(this.baseDir, 'knowledge', 'global.jsonl');
+  }
 
-		// Create new entry
-		const entry: KnowledgeEntry = {
-			id: generateId(),
-			content: params.content,
-			source: params.source,
-			relatedGoalIds: params.relatedGoalIds,
-			relatedDimensionIds: params.relatedDimensionIds ?? [],
-			status: "raw",
-			tags: params.tags ?? [],
-			supplementNeeded: params.supplementNeeded,
-			createdAt: Date.now(),
-			lastActivatedAt: null,
-			activationCount: 0,
-		};
+  /**
+   * Load knowledge from disk
+   */
+  private async loadFromDisk(): Promise<void> {
+    const storagePath = this.getStoragePath();
 
-		this.entries.push(entry);
-		this.contentHashes.add(contentHash);
-		this.appendToDisk(entry);
-		return entry;
-	}
+    try {
+      const content = await fs.readFile(storagePath, 'utf-8');
+      const lines = content.split('\n').filter((line) => line.trim());
 
-	/**
-	 * Generate SHA-256 hash of content for deduplication
-	 */
-	private generateContentHash(content: string): string {
-		return createHash("sha256").update(content).digest("hex");
-	}
+      for (const line of lines) {
+        try {
+          const entry: KnowledgeEntry = JSON.parse(line);
+          if (!entry.deletedAt) {
+            this.cache.set(entry.id, entry);
+          }
+        } catch (e) {
+          console.warn('[KnowledgeStore] Failed to parse entry:', line.slice(0, 100));
+        }
+      }
 
-	/**
-	 * Simple keyword search
-	 * P4 will add semantic search and cross-activation
-	 */
-	search(query: string, limit = 20): KnowledgeEntry[] {
-		if (!query.trim()) {
-			return this.entries.slice(-limit);
-		}
+      console.log(`[KnowledgeStore] Loaded ${this.cache.size} entries`);
+    } catch (error) {
+      // File doesn't exist yet, start empty
+      console.log('[KnowledgeStore] Starting with empty knowledge base');
+    }
+  }
 
-		const keywords = query.toLowerCase().split(/\s+/);
-		const scored = this.entries.map((entry) => {
-			const text = entry.content.toLowerCase();
-			const tagText = entry.tags.join(" ").toLowerCase();
-			let score = 0;
-			for (const kw of keywords) {
-				if (text.includes(kw)) score += 2;
-				if (tagText.includes(kw)) score += 1;
-			}
-			return { entry, score };
-		});
+  /**
+   * Save knowledge to disk (append-only for JSONL)
+   */
+  private async saveToDisk(): Promise<void> {
+    if (!this.dirty) return;
 
-		return scored
-			.filter((s) => s.score > 0)
-			.sort((a, b) => b.score - a.score)
-			.slice(0, limit)
-			.map((s) => s.entry);
-	}
+    const storagePath = this.getStoragePath();
+    await fs.mkdir(path.dirname(storagePath), { recursive: true });
 
-	/**
-	 * Get entries related to a specific goal
-	 */
-	getByGoal(goalId: string): KnowledgeEntry[] {
-		return this.entries.filter((e) => e.relatedGoalIds.includes(goalId));
-	}
+    // Write all entries as JSONL
+    const lines = Array.from(this.cache.values())
+      .filter((e) => !e.deletedAt)
+      .map((entry) => JSON.stringify(entry));
 
-	/**
-	 * Get all entries
-	 */
-	getAll(): KnowledgeEntry[] {
-		return [...this.entries];
-	}
+    await fs.writeFile(storagePath, lines.join('\n') + '\n', 'utf-8');
+    this.dirty = false;
 
-	/**
-	 * Get total entry count
-	 */
-	count(): number {
-		return this.entries.length;
-	}
+    console.log(`[KnowledgeStore] Saved ${lines.length} entries`);
+  }
 
-	/**
-	 * Clear all knowledge entries
-	 */
-	clear(): void {
-		this.entries = [];
-		this.contentHashes.clear();
-		const globalPath = join(this.dataDir, "global.jsonl");
-		if (existsSync(globalPath)) {
-			unlinkSync(globalPath);
-		}
-	}
+  /**
+   * Save a new knowledge entry
+   */
+  async save(
+    entry: Omit<KnowledgeEntry, 'id' | 'createdAt'>
+  ): Promise<KnowledgeEntry> {
+    const newEntry: KnowledgeEntry = {
+      ...entry,
+      id: generateId(),
+      createdAt: now(),
+      updatedAt: now(),
+    };
 
-	// ── Persistence ──
+    this.cache.set(newEntry.id, newEntry);
+    this.dirty = true;
 
-	private ensureDir(): void {
-		if (!existsSync(this.dataDir)) {
-			mkdirSync(this.dataDir, { recursive: true });
-		}
-	}
+    // Auto-save
+    await this.appendEntry(newEntry);
 
-	private appendToDisk(entry: KnowledgeEntry): void {
-		const globalPath = join(this.dataDir, "global.jsonl");
-		appendFileSync(globalPath, JSON.stringify(entry) + "\n", "utf-8");
-	}
+    return deepClone(newEntry);
+  }
 
-	/**
-	 * Persist all entries to disk (used when updating existing entries)
-	 */
-	private persistAllToDisk(): void {
-		const globalPath = join(this.dataDir, "global.jsonl");
-		const content = this.entries.map(e => JSON.stringify(e)).join("\n") + "\n";
-		writeFileSync(globalPath, content, "utf-8");
-	}
+  /**
+   * Append a single entry to the JSONL file
+   */
+  private async appendEntry(entry: KnowledgeEntry): Promise<void> {
+    const storagePath = this.getStoragePath();
+    await fs.mkdir(path.dirname(storagePath), { recursive: true });
 
-	private loadFromDisk(): void {
-		const globalPath = join(this.dataDir, "global.jsonl");
-		if (!existsSync(globalPath)) return;
+    const line = JSON.stringify(entry) + '\n';
+    await fs.appendFile(storagePath, line, 'utf-8');
+  }
 
-		try {
-			const content = readFileSync(globalPath, "utf-8");
-			const lines = content.trim().split("\n").filter(Boolean);
-			for (const line of lines) {
-				try {
-					const entry = JSON.parse(line) as KnowledgeEntry;
-					this.entries.push(entry);
-					// Build content hash set for deduplication
-					const contentHash = this.generateContentHash(entry.content);
-					this.contentHashes.add(contentHash);
-				} catch {
-					// Skip malformed lines
-				}
-			}
-		} catch {
-			// File read error, start fresh
-		}
-	}
+  /**
+   * Get entry by ID
+   */
+  async getById(id: string): Promise<KnowledgeEntry | null> {
+    const entry = this.cache.get(id);
+    if (!entry || entry.deletedAt) {
+      return null;
+    }
+    return deepClone(entry);
+  }
+
+  /**
+   * Get all knowledge entries for a goal
+   */
+  async getByGoal(goalId: string): Promise<KnowledgeEntry[]> {
+    const entries = Array.from(this.cache.values())
+      .filter((e) => e.goalId === goalId && !e.deletedAt)
+      .sort((a, b) => b.importance - a.importance);
+
+    return deepClone(entries);
+  }
+
+  /**
+   * Get knowledge entries by task
+   */
+  async getByTask(taskId: string): Promise<KnowledgeEntry[]> {
+    const entries = Array.from(this.cache.values())
+      .filter((e) => e.taskId === taskId && !e.deletedAt)
+      .sort((a, b) => b.importance - a.importance);
+
+    return deepClone(entries);
+  }
+
+  /**
+   * Search knowledge entries
+   */
+  async search(
+    query: string,
+    options: KnowledgeQueryOptions = {}
+  ): Promise<KnowledgeEntry[]> {
+    const {
+      maxResults = 10,
+      minRelevance = 0.1,
+      category,
+      tags,
+    } = options;
+
+    const queryKeywords = extractKeywords(query);
+    const candidates = Array.from(this.cache.values()).filter(
+      (e) => !e.deletedAt
+    );
+
+    // Score each entry
+    const scored = candidates.map((entry) => {
+      let score = 0;
+
+      // Text similarity
+      score += calculateSimilarity(queryKeywords, entry.content) * 0.5;
+      score += calculateSimilarity(queryKeywords, entry.tags.join(' ')) * 0.3;
+
+      // Category match
+      if (category && entry.category === category) {
+        score += 0.2;
+      }
+
+      // Tag match
+      if (tags) {
+        const matchingTags = entry.tags.filter((t) => tags.includes(t));
+        score += (matchingTags.length / tags.length) * 0.2;
+      }
+
+      // Importance boost
+      score += entry.importance * 0.1;
+
+      return { entry, score };
+    });
+
+    // Filter and sort
+    return scored
+      .filter((s) => s.score >= minRelevance)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults)
+      .map((s) => deepClone(s.entry));
+  }
+
+  /**
+   * Get relevant knowledge for a specific task
+   * Limited to the same goal scope
+   */
+  async getRelevantKnowledgeForTask(
+    task: Task,
+    query: string,
+    options: KnowledgeQueryOptions = {}
+  ): Promise<KnowledgeEntry[]> {
+    const { maxResults = 5, minRelevance = 0.3 } = options;
+
+    // 1. Get knowledge from the same goal
+    let candidates = await this.getByGoal(task.goalId);
+
+    // 2. If task has a dimension, prioritize same-dimension knowledge
+    if (task.dimensionId && candidates.length > 0) {
+      const dimKnowledge = candidates.filter((k) =>
+        k.relatedDimensionIds.includes(task.dimensionId!)
+      );
+
+      // If we have enough dimension-specific knowledge, use it primarily
+      if (dimKnowledge.length >= Math.min(maxResults, 3)) {
+        candidates = [...dimKnowledge, ...candidates];
+      }
+    }
+
+    // 3. Score by relevance to query
+    const queryKeywords = extractKeywords(query);
+    const scored = candidates.map((entry) => {
+      const contentScore = calculateSimilarity(queryKeywords, entry.content);
+      const tagScore = calculateSimilarity(queryKeywords, entry.tags.join(' '));
+      const importanceBoost = entry.importance * 0.1;
+
+      // Boost for task-associated knowledge
+      const taskBoost = entry.taskId === task.id ? 0.3 : 0;
+
+      // Boost for dimension match
+      const dimBoost =
+        task.dimensionId && entry.relatedDimensionIds.includes(task.dimensionId)
+          ? 0.2
+          : 0;
+
+      const score = contentScore * 0.5 + tagScore * 0.2 + importanceBoost + taskBoost + dimBoost;
+
+      return { entry, score };
+    });
+
+    // 4. Return high-relevance results
+    return scored
+      .filter((s) => s.score >= minRelevance)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults)
+      .map((s) => deepClone(s.entry));
+  }
+
+  /**
+   * Inject relevant knowledge into a prompt
+   */
+  async injectKnowledgeIntoPrompt(
+    task: Task,
+    basePrompt: string,
+    options: { maxResults?: number; contextHeader?: string } = {}
+  ): Promise<string> {
+    const { maxResults = 3, contextHeader = 'Relevant Background Knowledge' } = options;
+
+    // Extract query from the prompt
+    const query = extractKeywords(basePrompt);
+
+    // Get relevant knowledge
+    const relevantKnowledge = await this.getRelevantKnowledgeForTask(task, query, {
+      maxResults,
+      minRelevance: 0.3,
+    });
+
+    if (relevantKnowledge.length === 0) {
+      return basePrompt;
+    }
+
+    // Build knowledge context
+    const knowledgeContext = relevantKnowledge
+      .map((k, i) => {
+        const preview = k.content.length > 300
+          ? k.content.slice(0, 300) + '...'
+          : k.content;
+        return `[${i + 1}] ${preview}`;
+      })
+      .join('\n\n');
+
+    // Inject into prompt
+    return `## ${contextHeader}
+${knowledgeContext}
+
+---
+
+## Task
+${basePrompt}`;
+  }
+
+  /**
+   * Update an existing knowledge entry
+   */
+  async update(
+    id: string,
+    updates: Partial<KnowledgeEntry>
+  ): Promise<KnowledgeEntry> {
+    const entry = await this.getById(id);
+    if (!entry) {
+      throw new Error(`Knowledge entry not found: ${id}`);
+    }
+
+    const updatedEntry: KnowledgeEntry = {
+      ...entry,
+      ...updates,
+      id, // Ensure ID doesn't change
+      goalId: entry.goalId, // Ensure goalId doesn't change
+      createdAt: entry.createdAt, // Ensure createdAt doesn't change
+      updatedAt: now(),
+    };
+
+    this.cache.set(id, updatedEntry);
+    this.dirty = true;
+
+    // Full save to update
+    await this.saveToDisk();
+
+    return deepClone(updatedEntry);
+  }
+
+  /**
+   * Update entry importance
+   */
+  async updateImportance(id: string, importance: number): Promise<KnowledgeEntry> {
+    return this.update(id, { importance: Math.max(0, Math.min(1, importance)) });
+  }
+
+  /**
+   * Add tags to an entry
+   */
+  async addTags(id: string, tags: string[]): Promise<KnowledgeEntry> {
+    const entry = await this.getById(id);
+    if (!entry) {
+      throw new Error(`Knowledge entry not found: ${id}`);
+    }
+
+    const newTags = [...new Set([...entry.tags, ...tags])];
+    return this.update(id, { tags: newTags });
+  }
+
+  /**
+   * Link knowledge to a dimension
+   */
+  async linkToDimension(
+    id: string,
+    dimensionId: string
+  ): Promise<KnowledgeEntry> {
+    const entry = await this.getById(id);
+    if (!entry) {
+      throw new Error(`Knowledge entry not found: ${id}`);
+    }
+
+    if (entry.relatedDimensionIds.includes(dimensionId)) {
+      return entry; // Already linked
+    }
+
+    const newDimensionIds = [...entry.relatedDimensionIds, dimensionId];
+    return this.update(id, { relatedDimensionIds: newDimensionIds });
+  }
+
+  /**
+   * Delete an entry (soft delete)
+   */
+  async delete(id: string): Promise<void> {
+    const entry = await this.getById(id);
+    if (!entry) {
+      return;
+    }
+
+    const updatedEntry: KnowledgeEntry = {
+      ...entry,
+      deletedAt: now(),
+    };
+
+    this.cache.set(id, updatedEntry);
+    this.dirty = true;
+
+    await this.saveToDisk();
+  }
+
+  /**
+   * Hard delete an entry (use with caution)
+   */
+  async hardDelete(id: string): Promise<void> {
+    this.cache.delete(id);
+    this.dirty = true;
+    await this.saveToDisk();
+  }
+
+  /**
+   * Get knowledge statistics
+   */
+  async getStats(): Promise<{
+    totalEntries: number;
+    entriesByGoal: Record<string, number>;
+    entriesByCategory: Record<string, number>;
+    averageImportance: number;
+  }> {
+    const entries = Array.from(this.cache.values()).filter((e) => !e.deletedAt);
+
+    const byGoal: Record<string, number> = {};
+    const byCategory: Record<string, number> = {};
+    let totalImportance = 0;
+
+    for (const entry of entries) {
+      byGoal[entry.goalId] = (byGoal[entry.goalId] || 0) + 1;
+      byCategory[entry.category] = (byCategory[entry.category] || 0) + 1;
+      totalImportance += entry.importance;
+    }
+
+    return {
+      totalEntries: entries.length,
+      entriesByGoal: byGoal,
+      entriesByCategory: byCategory,
+      averageImportance: entries.length > 0 ? totalImportance / entries.length : 0,
+    };
+  }
+
+  /**
+   * Check if two goals have cross-activating knowledge
+   */
+  async checkCrossActivation(
+    goalId1: string,
+    goalId2: string
+  ): Promise<{
+    hasOverlap: boolean;
+    sharedKeywords: string[];
+    relevanceScore: number;
+  }> {
+    const knowledge1 = await this.getByGoal(goalId1);
+    const knowledge2 = await this.getByGoal(goalId2);
+
+    // Extract keywords from both
+    const text1 = knowledge1.map((k) => k.content).join(' ');
+    const text2 = knowledge2.map((k) => k.content).join(' ');
+
+    const keywords1 = new Set(extractKeywords(text1).split(' '));
+    const keywords2 = new Set(extractKeywords(text2).split(' '));
+
+    // Find shared keywords
+    const shared = [...keywords1].filter((k) => keywords2.has(k));
+
+    // Calculate relevance score
+    const totalUnique = new Set([...keywords1, ...keywords2]).size;
+    const relevanceScore = totalUnique > 0 ? shared.length / totalUnique : 0;
+
+    return {
+      hasOverlap: shared.length > 3,
+      sharedKeywords: shared,
+      relevanceScore,
+    };
+  }
+
+  /**
+   * Compact and optimize the storage file
+   */
+  async compact(): Promise<{ before: number; after: number }> {
+    const before = this.cache.size;
+
+    // Remove deleted entries from cache
+    for (const [id, entry] of this.cache.entries()) {
+      if (entry.deletedAt) {
+        this.cache.delete(id);
+      }
+    }
+
+    const after = this.cache.size;
+    this.dirty = true;
+
+    // Rewrite the file
+    await this.saveToDisk();
+
+    console.log(`[KnowledgeStore] Compacted: ${before} -> ${after} entries`);
+
+    return { before, after };
+  }
+
+  /**
+   * Clear all knowledge (for testing)
+   */
+  async clearAll(): Promise<void> {
+    this.cache.clear();
+    this.dirty = false;
+
+    const storagePath = this.getStoragePath();
+    try {
+      await fs.unlink(storagePath);
+    } catch (error) {
+      // File doesn't exist
+    }
+  }
 }
