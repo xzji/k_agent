@@ -149,6 +149,12 @@ export interface Task {
     dependencies: string[];
     pendingQuestions?: QuestionBatch;
     collectedInfo?: Record<string, unknown>;
+    valueThreshold?: number;
+    shouldNotify?: boolean;
+    notifyReason?: string;
+    notifyTiming?: string;
+    requiresUserInput?: boolean;
+    userRole?: string;
     executionHistory: ExecutionRecord[];
     createdAt: number;
     lastExecutedAt?: number;

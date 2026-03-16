@@ -16,4 +16,11 @@ export declare function runExample(): Promise<{
         task3: import("./types").Task;
     };
 }>;
+export declare function runBuyCarDemo(): Promise<{
+    goal: import("./types").Goal;
+    subGoals: import("./index").SubGoal[];
+    tasks: import("./types").Task[];
+    planReport: import("./index").PlanReport;
+    notifications: import("./types").Notification[];
+}>;
 //# sourceMappingURL=example.d.ts.map

@@ -10,6 +10,7 @@ import {
   TaskStore,
   KnowledgeStore,
   NotificationQueue,
+  SubGoalStore,
 
   // Core components
   TaskDependencyGraph,
@@ -18,6 +19,16 @@ import {
   // Planning
   ContextGatherer,
   SuccessCriteriaChecker,
+  SubGoalPlanner,
+  TaskPlanner,
+  PlanPresenter,
+
+  // Execution
+  ExecutionPipeline,
+
+  // Runtime
+  ClaudeLLMChannel,
+  SimpleIdleDetector,
 
   // Utils
   generateId,
@@ -498,7 +509,249 @@ export async function runExample() {
   }
 }
 
+// ============================================================================
+// 9. 购车场景完整演示（基于 buy_car_demo_showcase.js）
+// ============================================================================
+
+export async function runBuyCarDemo() {
+  console.log('\n╔════════════════════════════════════════════════════════════╗');
+  console.log('║         🚗 购车决策场景演示（buy_car_demo_showcase）        ║');
+  console.log('╚════════════════════════════════════════════════════════════╝');
+
+  // 初始化存储
+  const goalStore = new GoalStore();
+  const taskStore = new TaskStore();
+  const knowledgeStore = new KnowledgeStore();
+  const subGoalStore = new SubGoalStore();
+  const notificationQueue = new NotificationQueue();
+
+  await goalStore.init();
+  await taskStore.init();
+  await knowledgeStore.init();
+  await subGoalStore.init();
+
+  // 创建 LLM 适配器（使用本地模拟）
+  const llm = new ClaudeLLMChannel();
+  const idleDetector = new SimpleIdleDetector();
+
+  // 步骤1: 创建目标
+  console.log('\n📌 步骤1: 用户提交购车目标');
+  const userGoal = '我想买一辆SUV，预算20万以内，油车，要省油';
+  console.log(`🚗 用户输入: "${userGoal}"`);
+
+  const goal = await goalStore.createGoal({
+    title: userGoal,
+    description: '3个月内购买省油燃油SUV',
+    status: 'gathering_info',
+    priority: 'high',
+    dimensions: [],
+    successCriteria: [
+      { id: 'sc-1', description: '完成车型筛选和对比', type: 'milestone', completed: false },
+      { id: 'sc-2', description: '完成试驾体验', type: 'milestone', completed: false },
+      { id: 'sc-3', description: '确定最终购车方案', type: 'deliverable', completed: false },
+      { id: 'sc-4', description: '成功提车', type: 'deliverable', completed: false },
+    ],
+    progress: { completedCriteria: 0, totalCriteria: 4, percentage: 0 },
+    userContext: {
+      collectedInfo: {},
+      requiredInfo: ['用车场景', '预算范围', '品牌偏好', '购买时间'],
+    },
+  });
+  console.log(`✅ 目标创建: ${goal.id.slice(0, 8)}`);
+
+  // 步骤2: 信息收集
+  console.log('\n📌 步骤2: 收集背景信息');
+  const collectedInfo = {
+    usageScenario: '城市通勤为主，偶尔周末自驾游',
+    annualMileage: '1.5-2万公里',
+    passengerCount: '主要2人，偶尔4-5人',
+    brandPreference: '国产或合资都可以，更看性价比',
+    sizePreference: '紧凑型SUV即可，不需要太大',
+    transmission: '自动挡',
+    features: '看重安全配置、车机智能、省油',
+    purchaseTimeline: '2-3个月内购买',
+    tradeIn: '无旧车置换',
+    financing: '全款购车',
+    budget: '20万以内',
+    fuelType: '燃油车',
+    coreRequirement: '省油',
+  };
+
+  await goalStore.updateGoal(goal.id, {
+    userContext: { collectedInfo },
+    status: 'planning',
+  });
+  console.log('✅ 信息收集完成');
+  console.log(`   - 用车场景: ${collectedInfo.usageScenario}`);
+  console.log(`   - 预算: ${collectedInfo.budget}`);
+  console.log(`   - 购买时间: ${collectedInfo.purchaseTimeline}`);
+
+  // 步骤3: 子目标拆解
+  console.log('\n📌 步骤3: 拆解子目标');
+  const subGoalPlanner = new SubGoalPlanner(goalStore, subGoalStore, llm);
+
+  const subGoals = await subGoalPlanner.decomposeSubGoals(goal.id, collectedInfo);
+  console.log(`✅ 拆解完成，共 ${subGoals.length} 个子目标:`);
+  subGoals.forEach((sg, i) => {
+    const icon = sg.priority === 'critical' ? '🔴' : sg.priority === 'high' ? '🟡' : '🟢';
+    console.log(`   ${icon} ${i + 1}. ${sg.name} (${sg.priority})`);
+  });
+
+  // 步骤4: 任务生成
+  console.log('\n📌 步骤4: 生成任务');
+  const taskPlanner = new TaskPlanner(taskStore, subGoalStore, llm);
+
+  const allTasks = [];
+  for (const subGoal of subGoals.slice(0, 3)) { // 只为前3个子目标生成任务
+    const tasks = await taskPlanner.generateTasksForSubGoal(
+      subGoal.id,
+      {
+        goalTitle: goal.title,
+        goalDescription: goal.description,
+        userContext: collectedInfo,
+      },
+      { maxTasks: 3 }
+    );
+    allTasks.push(...tasks);
+  }
+
+  console.log(`✅ 任务生成完成，共 ${allTasks.length} 个任务`);
+
+  // 添加推送策略字段到任务
+  for (const task of allTasks) {
+    const shouldNotify = task.type !== 'monitoring';
+    const notifyReason = shouldNotify
+      ? task.type === 'exploration'
+        ? '用户需了解收集到的信息'
+        : task.type === 'interactive'
+          ? '需要用户决策'
+          : '任务完成结果'
+      : undefined;
+
+    await taskStore.updateTask(task.id, {
+      shouldNotify,
+      notifyReason,
+      notifyTiming: shouldNotify ? '任务完成后' : undefined,
+      requiresUserInput: task.type === 'interactive',
+      valueThreshold: shouldNotify ? 0.7 : 0,
+    });
+  }
+
+  // 步骤5: 计划展示
+  console.log('\n📌 步骤5: 生成计划报告');
+  const planPresenter = new PlanPresenter(
+    goalStore,
+    subGoalStore,
+    taskStore,
+    notificationQueue,
+    llm
+  );
+
+  const planReport = await planPresenter.generatePlanReport(goal.id);
+  console.log('✅ 计划报告生成');
+  console.log(`   - 子目标数: ${planReport.subGoals.length}`);
+  console.log(`   - 任务总数: ${planReport.summary.taskCount}`);
+  console.log(`   - 需要推送: ${planReport.summary.notifyTaskCount} 个`);
+  console.log(`   - 需要用户参与: ${planReport.summary.interactiveTaskCount} 个`);
+
+  // 步骤6: 创建执行管道和调度器
+  console.log('\n📌 步骤6: 初始化执行系统');
+  const executionPipeline = new ExecutionPipeline(llm, knowledgeStore, taskStore);
+  const dependencyGraph = new TaskDependencyGraph(taskStore);
+
+  // 创建 ValueAssessor（需要模拟）
+  const valueAssessor = {
+    assessValue: async (taskId: string, result: any) => ({
+      taskId,
+      valueScore: 0.75,
+      valueDimensions: {
+        relevance: 0.8,
+        timeliness: 0.7,
+        novelty: 0.75,
+        actionability: 0.8,
+      },
+      reasoning: '任务完成，信息有价值',
+      shouldNotify: true,
+      priority: 'medium' as const,
+    }),
+  };
+
+  const scheduler = new UnifiedTaskScheduler(
+    taskStore,
+    goalStore,
+    knowledgeStore,
+    notificationQueue,
+    dependencyGraph,
+    executionPipeline,
+    idleDetector,
+    {
+      preferences: {
+        notificationFrequency: 'immediate',
+      },
+    },
+    valueAssessor as any,
+    { maxConcurrent: 2, cycleIntervalMs: 1000 }
+  );
+
+  console.log('✅ 执行系统初始化完成');
+
+  // 步骤7: 手动执行几个任务
+  console.log('\n📌 步骤7: 执行任务');
+  const readyTasks = await taskStore.getReadyTasks();
+  console.log(`找到 ${readyTasks.length} 个就绪任务`);
+
+  for (const task of readyTasks.slice(0, 2)) {
+    console.log(`\n   ⏳ 执行: ${task.title}`);
+    const result = await executionPipeline.run(task);
+    console.log(`   ✅ 完成: ${result.success ? '成功' : '失败'}`);
+    if (result.output) {
+      console.log(`   📄 结果: ${result.output.slice(0, 50)}...`);
+    }
+  }
+
+  // 步骤8: 检查通知队列
+  console.log('\n📌 步骤8: 检查通知');
+  const notifications = notificationQueue.getAll();
+  console.log(`通知队列中有 ${notifications.length} 条通知`);
+  notifications.forEach((n, i) => {
+    console.log(`   ${i + 1}. [${n.priority}] ${n.title}`);
+  });
+
+  // 步骤9: 进度评估
+  console.log('\n📌 步骤9: 评估目标进度');
+  const completedTasks = allTasks.filter((t) => t.status === 'completed').length;
+  const progress = Math.round((completedTasks / allTasks.length) * 100);
+  console.log(`   完成度: ${progress}% (${completedTasks}/${allTasks.length})`);
+
+  // 最终总结
+  console.log('\n╔════════════════════════════════════════════════════════════╗');
+  console.log('║         ✅ 购车决策场景演示完成                             ║');
+  console.log('╚════════════════════════════════════════════════════════════╝');
+  console.log('\n📊 演示总结:');
+  console.log(`   - 目标: ${goal.title}`);
+  console.log(`   - 子目标: ${subGoals.length} 个`);
+  console.log(`   - 任务: ${allTasks.length} 个`);
+  console.log(`   - 知识条目: ${(await knowledgeStore.getByGoal(goal.id)).length} 条`);
+  console.log(`   - 通知: ${notifications.length} 条`);
+
+  return {
+    goal,
+    subGoals,
+    tasks: allTasks,
+    planReport,
+    notifications,
+  };
+}
+
 // 如果直接运行此文件
 if (require.main === module) {
-  runExample().catch(console.error);
+  // 运行基础示例
+  runExample()
+    .then(() => {
+      console.log('\n' + '='.repeat(60));
+      console.log('基础示例完成，按 Enter 继续购车场景演示...');
+      console.log('='.repeat(60) + '\n');
+    })
+    .then(() => runBuyCarDemo())
+    .catch(console.error);
 }

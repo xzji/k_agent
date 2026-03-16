@@ -3,7 +3,7 @@
  *
  * Adapts the new Unified Task Scheduler architecture to work with the coding-agent Extension API.
  * Provides:
- * - LLM Channel using the coding-agent's model
+ * - LLM Channel using the coding-agent's model (direct fetch like legacy)
  * - Execution Pipeline using ExtensionAPI tools
  * - Idle Detector integration with coding-agent's IdleDetector
  */
@@ -15,17 +15,21 @@ import type {
   KnowledgeEntry,
 } from '../types.js';
 import type { ExtensionAPI } from '../../extensions/types.js';
+import type { ModelRegistry } from '../model-registry.js';
+import { logLLMRequest, logLLMResponse, logError } from '../utils/logger.js';
 
 /**
  * LLM Channel that uses coding-agent's model
+ * Uses direct fetch to OpenAI-compatible API endpoints (like legacy)
  */
 export class CodingAgentLLMChannel {
-  private model: import("@mariozechner/pi-ai").Model<any> | undefined;
-  private modelRegistry: import("../model-registry.js").ModelRegistry | undefined;
+  private model: any | undefined;
+  private modelRegistry: ModelRegistry | undefined;
+  private abortController: AbortController | null = null;
 
   constructor(
-    model?: import("@mariozechner/pi-ai").Model<any>,
-    modelRegistry?: import("../model-registry.js").ModelRegistry
+    model?: any,
+    modelRegistry?: ModelRegistry
   ) {
     this.model = model;
     this.modelRegistry = modelRegistry;
@@ -34,8 +38,117 @@ export class CodingAgentLLMChannel {
   /**
    * Update the current model
    */
-  syncModel(model: import("@mariozechner/pi-ai").Model<any>): void {
+  syncModel(model: any): void {
     this.model = model;
+  }
+
+  /**
+   * Get API key for model
+   */
+  private async getApiKey(): Promise<string> {
+    if (!this.model || !this.modelRegistry) {
+      throw new Error('No model or registry configured');
+    }
+    const apiKey = await this.modelRegistry.getApiKey(this.model);
+    if (!apiKey) {
+      throw new Error(`No API key for provider ${this.model.provider}`);
+    }
+    return apiKey;
+  }
+
+  /**
+   * Get default base URL for known providers
+   */
+  private getDefaultBaseUrl(provider: string): string {
+    const defaults: Record<string, string> = {
+      anthropic: 'https://api.anthropic.com/v1',
+      openai: 'https://api.openai.com/v1',
+      google: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      groq: 'https://api.groq.com/openai/v1',
+      deepseek: 'https://api.deepseek.com/v1',
+      mistral: 'https://api.mistral.ai/v1',
+      xai: 'https://api.x.ai/v1',
+      zai: 'https://api.z.ai/v1',
+    };
+    return defaults[provider] ?? 'https://api.openai.com/v1';
+  }
+
+  /**
+   * Make a direct fetch request to the LLM API
+   */
+  private async fetchChatCompletion(params: {
+    systemPrompt: string;
+    messages: Array<{ role: string; content: string }>;
+    temperature?: number;
+    maxTokens?: number;
+  }): Promise<{ content: string; finishReason?: string }> {
+    if (!this.model) {
+      throw new Error('No model selected. Please use /model to select a model first.');
+    }
+
+    const apiKey = await this.getApiKey();
+    this.abortController = new AbortController();
+
+    // Build messages array
+    const messages = [
+      { role: 'system', content: params.systemPrompt },
+      ...params.messages.map(m => ({ role: m.role, content: m.content })),
+    ];
+
+    const baseUrl = this.model.baseUrl || this.getDefaultBaseUrl(this.model.provider);
+    const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+
+    const body = {
+      model: this.model.id,
+      messages,
+      temperature: params.temperature ?? 0.7,
+      max_tokens: params.maxTokens ?? 4096,
+      stream: false,
+    };
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      ...(this.model.headers ?? {}),
+    };
+
+    console.log('[LLMChannel] Fetching from:', url);
+    console.log('[LLMChannel] Model:', this.model.id);
+    console.log('[LLMChannel] Provider:', this.model.provider);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: this.abortController.signal,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'unknown error');
+      throw new Error(`LLM request failed (${response.status}): ${errorText}`);
+    }
+
+    const data = (await response.json()) as {
+      choices: Array<{
+        message: { content: string };
+        finish_reason?: string;
+      }>;
+    };
+
+    if (!data.choices || data.choices.length === 0) {
+      throw new Error('LLM returned no choices');
+    }
+
+    const content = data.choices[0].message.content;
+
+    if (!content || content.trim().length === 0) {
+      throw new Error('LLM returned empty content');
+    }
+
+    return {
+      content,
+      finishReason: data.choices[0].finish_reason,
+    };
   }
 
   /**
@@ -48,22 +161,35 @@ export class CodingAgentLLMChannel {
     content: string;
     usage?: { total_tokens: number };
   }> {
-    if (!this.model) {
-      throw new Error('No model selected. Please use /model to select a model first.');
-    }
+    console.log('[LLMChannel] complete() called, prompt length:', prompt.length);
+
+    const startTime = Date.now();
+    const goalId = options?.goalId as string | undefined;
+    const taskId = options?.taskId as string | undefined;
 
     try {
-      // Use the model's complete method
-      const response = await this.model.complete(prompt, {
+      // 记录 LLM 请求日志
+      await logLLMRequest(prompt, options, goalId, taskId);
+
+      const result = await this.fetchChatCompletion({
+        systemPrompt: options?.systemPrompt as string || '',
+        messages: [{ role: 'user', content: prompt }],
         temperature: options?.temperature as number ?? 0.7,
-        maxTokens: options?.maxTokens as number ?? 4000,
+        maxTokens: options?.maxTokens as number ?? 4096,
       });
 
+      const duration = Date.now() - startTime;
+      console.log('[LLMChannel] complete() response length:', result.content.length);
+
+      // 记录 LLM 响应日志
+      await logLLMResponse(result.content, duration, goalId, taskId);
+
       return {
-        content: response.content,
-        usage: response.usage,
+        content: result.content,
       };
     } catch (error) {
+      const duration = Date.now() - startTime;
+      await logError(error instanceof Error ? error : String(error), 'llm_response', goalId, taskId, { duration });
       console.error('[LLMChannel] Error completing prompt:', error);
       throw error;
     }
@@ -76,26 +202,100 @@ export class CodingAgentLLMChannel {
     systemPrompt: string;
     messages: Array<{ role: 'user' | 'assistant'; content: string }>;
     temperature?: number;
+    goalId?: string;
+    taskId?: string;
   }): Promise<T> {
-    const prompt = `${params.systemPrompt}\n\n${params.messages.map(m => `${m.role}: ${m.content}`).join('\n')}`;
+    console.log('[LLMChannel] chatJSON() called');
+    console.log('[LLMChannel] Messages count:', params.messages.length);
+    console.log('[LLMChannel] Last message preview:', params.messages[params.messages.length - 1]?.content.slice(0, 100));
 
-    const response = await this.complete(prompt, {
-      temperature: params.temperature ?? 0.7,
-    });
+    const startTime = Date.now();
+    const goalId = params.goalId;
+    const taskId = params.taskId;
 
     try {
-      // Try to parse as JSON
-      const jsonMatch = response.content.match(/```json\s*([\s\S]*?)\s*```/) ||
-                       response.content.match(/```\s*([\s\S]*?)\s*```/) ||
-                       response.content.match(/\{[\s\S]*\}/);
+      // 构建完整 prompt 用于日志
+      const fullPrompt = params.systemPrompt + '\n\n' + params.messages.map(m => `${m.role}: ${m.content}`).join('\n');
+      await logLLMRequest(fullPrompt, { temperature: params.temperature }, goalId, taskId);
 
-      const jsonStr = jsonMatch ? jsonMatch[1] || jsonMatch[0] : response.content;
-      return JSON.parse(jsonStr) as T;
+      const result = await this.fetchChatCompletion({
+        systemPrompt: params.systemPrompt + '\n\nYou MUST respond with valid JSON only. Do not include any text, explanation, or markdown formatting outside the JSON object. Return ONLY the JSON.',
+        messages: params.messages.map(m => ({ role: m.role, content: m.content })),
+        temperature: params.temperature ?? 0.7,
+        maxTokens: 8192,
+      });
+
+      const duration = Date.now() - startTime;
+      console.log('[LLMChannel] Response received, length:', result.content.length);
+
+      if (result.content.length > 0 && result.content.length < 500) {
+        console.log('[LLMChannel] Content preview:', result.content);
+      } else if (result.content.length >= 500) {
+        console.log('[LLMChannel] Content preview:', result.content.slice(0, 500) + '...');
+      }
+
+      // 记录 LLM 响应日志
+      await logLLMResponse(result.content, duration, goalId, taskId);
+
+      // Parse JSON response
+      return this.parseJSONResponse<T>(result.content);
     } catch (error) {
-      console.error('[LLMChannel] Failed to parse JSON response:', error);
-      // Return a default response
-      return {} as T;
+      const duration = Date.now() - startTime;
+      await logError(error instanceof Error ? error : String(error), 'llm_response', goalId, taskId, { duration });
+      console.error('[LLMChannel] Failed to get JSON response:', error);
+      throw error;
     }
+  }
+
+  /**
+   * Parse JSON response with fallback
+   */
+  private parseJSONResponse<T>(content: string): T {
+    // Try to find JSON block
+    let jsonStr = content;
+
+    const jsonBlockMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+    if (jsonBlockMatch) {
+      jsonStr = jsonBlockMatch[1];
+    } else {
+      const codeBlockMatch = content.match(/```\s*([\s\S]*?)\s*```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1];
+      } else {
+        // Try to find JSON object/array in plain text
+        const jsonObjectMatch = content.match(/\{[\s\S]*\}/);
+        const jsonArrayMatch = content.match(/\[[\s\S]*\]/);
+        if (jsonObjectMatch) {
+          jsonStr = jsonObjectMatch[0];
+        } else if (jsonArrayMatch) {
+          jsonStr = jsonArrayMatch[0];
+        }
+      }
+    }
+
+    jsonStr = jsonStr.trim();
+
+    // Validate we have something to parse
+    if (!jsonStr || (jsonStr[0] !== '{' && jsonStr[0] !== '[')) {
+      console.error('[LLMChannel] No valid JSON found in response. Raw content:', content.slice(0, 500));
+      throw new Error(`No valid JSON found in response. Content starts with: ${content.slice(0, 100)}`);
+    }
+
+    try {
+      return JSON.parse(jsonStr) as T;
+    } catch (parseError) {
+      console.error('[LLMChannel] JSON parse error:', parseError);
+      console.error('[LLMChannel] Attempted to parse:', jsonStr.slice(0, 200));
+      throw new Error(`Failed to parse JSON response: ${parseError}`);
+    }
+  }
+
+  /**
+   * Abort the current request
+   */
+  abort(): void {
+    this.abortController?.abort();
+    this.abortController = null;
   }
 }
 

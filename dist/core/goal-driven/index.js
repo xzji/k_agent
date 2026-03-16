@@ -46,7 +46,7 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ARCHITECTURE = exports.VERSION = exports.EventEmitter = exports.Semaphore = exports.retry = exports.validateDependencies = exports.formatDate = exports.formatDuration = exports.calculateSimilarity = exports.extractKeywords = exports.deepClone = exports.sleep = exports.getPriorityWeight = exports.now = exports.generateId = exports.GoalOrchestrator = exports.ValueAssessor = exports.NotificationQueue = exports.SubGoalStore = exports.GoalStore = exports.KnowledgeStore = exports.PlanPresenter = exports.TaskPlanner = exports.SubGoalPlanner = exports.SuccessCriteriaChecker = exports.ContextGatherer = exports.UnifiedTaskScheduler = exports.TaskDependencyGraph = exports.TaskStore = void 0;
+exports.ARCHITECTURE = exports.VERSION = exports.EventEmitter = exports.Semaphore = exports.retry = exports.validateDependencies = exports.formatDate = exports.formatDuration = exports.calculateSimilarity = exports.extractKeywords = exports.deepClone = exports.sleep = exports.getPriorityWeight = exports.now = exports.generateId = exports.GoalOrchestrator = exports.LocalExecutionPipeline = exports.SimpleIdleDetector = exports.ClaudeLLMChannel = exports.ExecutionPipeline = exports.ValueAssessor = exports.NotificationQueue = exports.SubGoalStore = exports.GoalStore = exports.KnowledgeStore = exports.PlanPresenter = exports.TaskPlanner = exports.SubGoalPlanner = exports.SuccessCriteriaChecker = exports.ContextGatherer = exports.UnifiedTaskScheduler = exports.TaskDependencyGraph = exports.TaskStore = void 0;
 // Types
 __exportStar(require("./types"), exports);
 // Core components
@@ -81,6 +81,14 @@ var notification_queue_1 = require("./output-layer/notification-queue");
 Object.defineProperty(exports, "NotificationQueue", { enumerable: true, get: function () { return notification_queue_1.NotificationQueue; } });
 var value_assessor_1 = require("./output-layer/value-assessor");
 Object.defineProperty(exports, "ValueAssessor", { enumerable: true, get: function () { return value_assessor_1.ValueAssessor; } });
+// Execution layer
+var execution_pipeline_1 = require("./execution/execution-pipeline");
+Object.defineProperty(exports, "ExecutionPipeline", { enumerable: true, get: function () { return execution_pipeline_1.ExecutionPipeline; } });
+// Runtime adapters
+var claude_llm_adapter_1 = require("./runtime/claude-llm-adapter");
+Object.defineProperty(exports, "ClaudeLLMChannel", { enumerable: true, get: function () { return claude_llm_adapter_1.ClaudeLLMChannel; } });
+Object.defineProperty(exports, "SimpleIdleDetector", { enumerable: true, get: function () { return claude_llm_adapter_1.SimpleIdleDetector; } });
+Object.defineProperty(exports, "LocalExecutionPipeline", { enumerable: true, get: function () { return claude_llm_adapter_1.LocalExecutionPipeline; } });
 // Orchestrator
 var goal_orchestrator_1 = require("./orchestrator/goal-orchestrator");
 Object.defineProperty(exports, "GoalOrchestrator", { enumerable: true, get: function () { return goal_orchestrator_1.GoalOrchestrator; } });
@@ -116,6 +124,7 @@ exports.ARCHITECTURE = {
         'PlanPresenter - Plan presentation and user confirmation',
         'ValueAssessor - Task result value assessment and smart notification',
         'UnifiedTaskScheduler - Core scheduling engine with value-based notification',
+        'ExecutionPipeline - Task execution with type-specific handling',
         'TaskStore - JSON-based task persistence',
         'SubGoalStore - Sub-goal persistence',
         'TaskDependencyGraph - DAG management with cycle detection',
@@ -124,6 +133,8 @@ exports.ARCHITECTURE = {
         'KnowledgeStore - Goal-scoped knowledge reuse',
         'GoalStore - Goal and dimension management',
         'NotificationQueue - Priority-based notification system',
+        'ClaudeLLMChannel - LLM adapter for Claude API integration',
+        'SimpleIdleDetector - User idle state detection',
     ],
     hierarchy: [
         'Goal - User objective',

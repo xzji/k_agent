@@ -11,7 +11,15 @@ import { type IGoalStore, type ISubGoalStore, type ITaskStore, type INotificatio
  * Plan report structure
  */
 export interface PlanReport {
-    summary: string;
+    goalId: string;
+    goalTitle: string;
+    summary: {
+        subGoalCount: number;
+        taskCount: number;
+        notifyTaskCount: number;
+        interactiveTaskCount: number;
+        estimatedDuration: string;
+    };
     subGoals: Array<{
         id: string;
         name: string;
@@ -27,6 +35,10 @@ export interface PlanReport {
             priority: string;
             hierarchyLevel: string;
             expectedResult: string;
+            shouldNotify?: boolean;
+            notifyReason?: string;
+            notifyTiming?: string;
+            requiresUserInput?: boolean;
         }>;
     }>;
     timeline: string;

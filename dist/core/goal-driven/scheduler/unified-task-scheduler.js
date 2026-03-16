@@ -643,7 +643,7 @@ Please ensure this execution provides fresh insights and varies from previous ru
                 // Wait for user idle before sending notification
                 const isIdle = await this.waitForUserIdle(300000); // 5 minute timeout
                 if (isIdle || task.priority === 'critical') {
-                    this.enqueueValueBasedNotification(task, result, assessment);
+                    await this.enqueueValueBasedNotification(task, result, assessment);
                 }
                 else {
                     // User not idle, delay notification
@@ -675,8 +675,8 @@ Please ensure this execution provides fresh insights and varies from previous ru
     /**
      * Enqueue value-based notification
      */
-    enqueueValueBasedNotification(task, result, assessment) {
-        const goal = this.goalStore.getGoal(task.goalId);
+    async enqueueValueBasedNotification(task, result, assessment) {
+        const goal = await this.goalStore.getGoal(task.goalId);
         // Build notification content with value context
         const content = this.buildNotificationContent(task, result, assessment);
         const notification = {

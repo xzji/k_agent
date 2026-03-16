@@ -44,6 +44,8 @@ export { GoalStore } from './goal-manager/goal-store';
 export { SubGoalStore } from './sub-goal/sub-goal-store';
 export { NotificationQueue } from './output-layer/notification-queue';
 export { ValueAssessor, type ValueAssessment } from './output-layer/value-assessor';
+export { ExecutionPipeline } from './execution/execution-pipeline';
+export { ClaudeLLMChannel, SimpleIdleDetector, LocalExecutionPipeline, } from './runtime/claude-llm-adapter';
 export { GoalOrchestrator, type OrchestrationPhase, type OrchestrationState, } from './orchestrator/goal-orchestrator';
 export { generateId, now, getPriorityWeight, sleep, deepClone, extractKeywords, calculateSimilarity, formatDuration, formatDate, validateDependencies, retry, Semaphore, EventEmitter, } from './utils';
 /**

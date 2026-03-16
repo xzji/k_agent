@@ -145,6 +145,13 @@ export class NotificationQueue implements INotificationQueue {
   }
 
   /**
+   * Get pending notification count (alias for size)
+   */
+  get pendingCount(): number {
+    return this.queue.length;
+  }
+
+  /**
    * Check if queue is empty
    */
   isEmpty(): boolean {

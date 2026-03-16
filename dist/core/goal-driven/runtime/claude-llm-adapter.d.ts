@@ -20,12 +20,28 @@ export declare class ClaudeLLMChannel {
         };
     }>;
     /**
+     * Chat - 对话式响应
+     */
+    chat(params: {
+        systemPrompt?: string;
+        messages: Array<{
+            role: 'user' | 'assistant' | 'system';
+            content: string;
+        }>;
+        temperature?: number;
+    }): Promise<{
+        content: string;
+        usage?: {
+            total_tokens: number;
+        };
+    }>;
+    /**
      * Chat JSON - 对话式 JSON 响应
      */
     chatJSON<T>(params: {
-        systemPrompt: string;
+        systemPrompt?: string;
         messages: Array<{
-            role: 'user' | 'assistant';
+            role: 'user' | 'assistant' | 'system';
             content: string;
         }>;
         temperature?: number;

@@ -40,6 +40,12 @@ import {
   PlanPresenter,
   TaskPlanner,
   SubGoalPlanner,
+  GoalDrivenLogger,
+  setGlobalLogger,
+  logUserInput,
+  logSystemAction,
+  logGoalEvent,
+  logError,
   type Task,
   type Goal,
   type TaskStatus,
@@ -56,6 +62,9 @@ import {
 // Reuse legacy IdleDetector and NotificationQueue
 import { IdleDetector } from "./output-layer/idle-detector.js";
 import { sleep } from "./utils/index.js";
+
+// Logger instance
+let logger: GoalDrivenLogger | null = null;
 
 const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // ── Data directory ──
@@ -80,12 +89,29 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   let idleDetector: IdleDetector | null = null;
   let codingAgentIdleDetector: CodingAgentIdleDetector | null = null;
 
+  // ── Input handler unsubscribe ──
+  let unsubscribeInputHandler: (() => void) | null = null;
+
   // ── Initialization state ──
   let initialized = false;
 
   // ── Helper function to initialize all components ──
   async function initialize(ctx?: import("../../extensions/types.js").ExtensionCommandContext): Promise<void> {
     if (initialized) return;
+
+    // Initialize logger
+    if (!logger) {
+      const logDir = join(getAgentDir(), "logs");
+      logger = new GoalDrivenLogger({
+        logDir,
+        maxDays: 7,
+        consoleOutput: true,
+        minLevel: 'debug',
+      });
+      await logger.init();
+      setGlobalLogger(logger);
+      await logSystemAction('Goal-Driven Agent initialization started', { dataDir });
+    }
 
     // Try to get model from context
     let currentModel: import("@mariozechner/pi-ai").Model<any> | undefined;
@@ -148,7 +174,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     }
 
     // Initialize planners
-    const contextGatherer = new ContextGatherer(taskStore!, llmChannel);
+    const contextGatherer = new ContextGatherer(taskStore!, notificationQueue, llmChannel);
     const successCriteriaChecker = new SuccessCriteriaChecker(
       goalStore,
       taskStore!,
@@ -218,7 +244,168 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       deliverPendingNotifications(pi);
     });
 
+    // Subscribe to user input events to handle interactive task responses
+    if (!unsubscribeInputHandler) {
+      unsubscribeInputHandler = pi.on("input", async (event) => {
+        const userResponse = event.text;
+        const goals = await goalStore!.getAllGoals();
+
+        // ========================================================================
+        // CASE 1: Check if there's a goal in collecting_info phase (Phase 1)
+        // ========================================================================
+        const collectingGoal = goals.find(g => g.status === 'gathering_info');
+        if (collectingGoal) {
+          const state = orchestrator?.getState(collectingGoal.id);
+          if (state && state.phase === 'collecting_info' && state.interactiveTaskId) {
+            await logUserInput(userResponse, { goalId: collectingGoal.id, phase: 'collecting_info' });
+
+            try {
+              pi.notify("⏳ 正在处理您的回复...", "info");
+
+              const result = await orchestrator!.handleInfoCollectionResponse(
+                collectingGoal.id,
+                userResponse
+              );
+
+              if (result.hasEnoughInfo && result.canProceed) {
+                pi.notify("✅ 信息收集完成，正在拆解子目标...", "success");
+
+                // Phase 2&3: Decompose sub-goals
+                const subGoals = await orchestrator!.decomposeSubGoals(collectingGoal.id);
+                await logSystemAction('Sub-goals decomposed', {
+                  goalId: collectingGoal.id,
+                  subGoalCount: subGoals.length,
+                });
+
+                // Phase 4&5: Generate and review tasks
+                pi.notify(`📋 正在生成任务计划 (${subGoals.length} 个子目标)...`, "info");
+                const { tasks, reviewResults, adjusted } = await orchestrator!.generateAndReviewTasks(
+                  collectingGoal.id
+                );
+                await logSystemAction('Tasks generated and reviewed', {
+                  goalId: collectingGoal.id,
+                  taskCount: tasks.length,
+                  adjusted,
+                });
+
+                // Phase 6: Present plan
+                pi.notify("📊 正在生成计划报告...", "info");
+                const { report, confirmed } = await orchestrator!.presentPlanForConfirmation(collectingGoal.id);
+
+                if (confirmed) {
+                  await orchestrator!.startExecution(collectingGoal.id);
+                  pi.notify(
+                    `🎯 计划已确认并开始执行！\n` +
+                    `   子目标: ${report.subGoalCount} 个\n` +
+                    `   任务: ${report.taskCount} 个\n` +
+                    `   预估时间: ${report.estimatedDuration}`,
+                    "success"
+                  );
+                } else {
+                  pi.notify("⚠️ 计划需要调整，请查看详情", "warning");
+                }
+
+                return { action: "handled" as const };
+              } else if (result.nextQuestions && result.nextQuestions.length > 0) {
+                const nextQuestion = result.nextQuestions[0];
+                const questionText = typeof nextQuestion === 'string'
+                  ? nextQuestion
+                  : nextQuestion.text;
+
+                pi.notify(
+                  `🆘 Need more information: ${collectingGoal.title}\n\n${questionText}`,
+                  "info"
+                );
+                return { action: "handled" as const };
+              } else {
+                pi.notify("✅ 收到！请等待下一个问题...", "info");
+                return { action: "handled" as const };
+              }
+            } catch (error) {
+              await logError(error instanceof Error ? error : String(error), 'error', collectingGoal.id, state.interactiveTaskId);
+              pi.notify(`❌ 处理回复时出错: ${error instanceof Error ? error.message : String(error)}`, "error");
+              return { action: "handled" as const };
+            }
+          }
+        }
+
+        // ========================================================================
+        // CASE 2: Check for waiting_user tasks (interactive tasks during execution)
+        // ========================================================================
+        const allTasks = await taskStore!.getAllTasks();
+        const waitingTask = allTasks.find(t => t.status === 'waiting_user');
+        if (waitingTask) {
+          await logUserInput(userResponse, { taskId: waitingTask.id, goalId: waitingTask.goalId, phase: 'waiting_user' });
+
+          try {
+            pi.notify("⏳ 正在处理您的回复...", "info");
+
+            // Handle the response through the scheduler
+            await scheduler!.handleUserResponse(waitingTask.id, userResponse);
+
+            await logSystemAction('User response handled for waiting task', {
+              taskId: waitingTask.id,
+              goalId: waitingTask.goalId,
+            });
+
+            pi.notify("✅ 收到！继续执行任务...", "info");
+            return { action: "handled" as const };
+          } catch (error) {
+            await logError(error instanceof Error ? error : String(error), 'error', waitingTask.goalId, waitingTask.id);
+            pi.notify(`❌ 处理回复时出错: ${error instanceof Error ? error.message : String(error)}`, "error");
+            return { action: "handled" as const };
+          }
+        }
+
+        // ========================================================================
+        // CASE 3: Check for presenting_plan phase (plan confirmation)
+        // ========================================================================
+        const activeGoal = goals.find(g => g.status === 'active' || g.status === 'planning');
+        if (activeGoal) {
+          const state = orchestrator?.getState(activeGoal.id);
+          if (state && state.phase === 'presenting_plan') {
+            await logUserInput(userResponse, { goalId: activeGoal.id, phase: 'presenting_plan' });
+
+            try {
+              const response = userResponse.toLowerCase().trim();
+
+              // Check for confirmation
+              if (['yes', '确认', '确定', 'ok', '好的', '可以', '没问题', '同意', '执行'].some(k => response.includes(k))) {
+                pi.notify("✅ 计划已确认，开始执行...", "success");
+                await orchestrator!.startExecution(activeGoal.id);
+                return { action: "handled" as const };
+              }
+
+              // Check for modification request
+              if (['no', '不', '修改', '调整', '改', '重', '再', '需要'].some(k => response.includes(k))) {
+                pi.notify("📝 收到修改意见，正在调整计划...", "info");
+                await orchestrator!.handlePlanModification(activeGoal.id, userResponse);
+                return { action: "handled" as const };
+              }
+
+              // Default: assume it's feedback and handle accordingly
+              pi.notify("⏳ 正在处理您的反馈...", "info");
+              return { action: "handled" as const };
+            } catch (error) {
+              await logError(error instanceof Error ? error : String(error), 'error', activeGoal.id);
+              pi.notify(`❌ 处理确认时出错: ${error instanceof Error ? error.message : String(error)}`, "error");
+              return { action: "handled" as const };
+            }
+          }
+        }
+
+        // ========================================================================
+        // CASE 4: No goal-driven input to handle, let pi-agent process it
+        // ========================================================================
+        return { action: "continue" as const };
+      });
+    }
+
     initialized = true;
+    await logSystemAction('Goal-Driven Agent initialized successfully', {
+      modelId: currentModel?.id,
+      provider: currentModel?.provider,
+    });
     console.log('[GoalDriven] Initialized successfully');
   }
 
@@ -262,10 +449,14 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           }
 
           ctx.ui.notify("⏳ 正在创建目标并收集信息...", "info");
+          await logUserInput(`/goal add ${rest}`, { command: 'add' });
+          await logSystemAction('Starting goal creation', { description: rest });
 
           try {
             // Start goal with info collection
+            await logSystemAction('Calling orchestrator.startGoal()');
             const result = await orchestrator!.startGoal(rest);
+            await logGoalEvent('Goal created', result.goalId, { interactiveTaskId: result.interactiveTaskId });
 
             ctx.ui.notify(
               `✅ 目标已创建: ${result.goalId}\n` +
@@ -276,10 +467,13 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
             // Start scheduler
             if (!scheduler!.isRunning()) {
+              await logSystemAction('Starting scheduler', { goalId: result.goalId });
               await scheduler!.start();
+              await logSystemAction('Scheduler started', { goalId: result.goalId });
             }
 
           } catch (error) {
+            await logError(error, 'error', undefined, undefined, { command: 'add', description: rest });
             ctx.ui.notify(`❌ 创建目标失败: ${String(error)}`, "error");
           }
           return;
@@ -454,7 +648,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           }
 
           await taskStore!.clearAll?.() || await clearTasksManual();
-          await knowledgeStore!.clear?.() || await clearKnowledgeManual();
+          await knowledgeStore!.clearAll?.() || await clearKnowledgeManual();
 
           ctx.ui.notify(`🗑️ 已清空 ${goals.length} 个目标及所有相关数据。`, "info");
           return;
@@ -501,6 +695,82 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return;
         }
 
+        case "logs": {
+          const { readFile, readdir } = await import("node:fs/promises");
+          const logDir = join(getAgentDir(), "logs");
+
+          try {
+            const files = await readdir(logDir);
+            const logFiles = files.filter(f => f.startsWith('goal-driven-') && f.endsWith('.log'));
+
+            if (logFiles.length === 0) {
+              ctx.ui.notify("暂无日志文件", "info");
+              return;
+            }
+
+            // Sort by date (newest first)
+            logFiles.sort().reverse();
+
+            // Show list if no specific date provided
+            const dateArg = rest.trim();
+            if (!dateArg) {
+              const lines = [
+                "📋 日志文件列表 (使用 /goal logs <日期> 查看):",
+                ...logFiles.slice(0, 7).map(f => {
+                  const date = f.replace('goal-driven-', '').replace('.log', '');
+                  return `  - ${date} (/goal logs ${date})`;
+                }),
+              ];
+              ctx.ui.notify(lines.join('\n'), "info");
+              return;
+            }
+
+            // Show specific log file
+            const logFile = join(logDir, `goal-driven-${dateArg}.log`);
+            try {
+              const content = await readFile(logFile, 'utf-8');
+              const lines = content.trim().split('\n');
+
+              // Parse and format recent entries (last 50)
+              const recentEntries = lines.slice(-50).map(line => {
+                try {
+                  const entry = JSON.parse(line);
+                  const time = entry.timestamp?.split('T')[1]?.split('.')[0] ?? '??';
+                  const emoji = {
+                    user_input: '👤',
+                    system_action: '⚙️',
+                    llm_request: '📤',
+                    llm_response: '📥',
+                    task_event: '📋',
+                    goal_event: '🎯',
+                    scheduler_event: '⏰',
+                    notification: '🔔',
+                    error: '❌',
+                  }[entry.category] ?? '📝';
+                  return `${time} ${emoji} [${entry.level.toUpperCase()}] ${entry.message}`;
+                } catch {
+                  return line.slice(0, 100);
+                }
+              });
+
+              const output = [
+                `📄 日志: ${dateArg} (共 ${lines.length} 条, 显示最近 50 条)`,
+                ...recentEntries,
+                '',
+                '图例: 👤用户 ⚙️系统 📤LLM请求 📥LLM响应 📋任务 🎯目标 ⏰调度器 🔔通知 ❌错误',
+              ].join('\n');
+
+              ctx.ui.notify(output, "info");
+            } catch (err) {
+              ctx.ui.notify(`无法读取日志文件: ${String(err)}`, "error");
+            }
+            return;
+          } catch (err) {
+            ctx.ui.notify(`无法读取日志目录: ${String(err)}`, "error");
+            return;
+          }
+        }
+
         default: {
           ctx.ui.notify(
             "Goal-Driven Agent 命令 (新架构):\n" +
@@ -512,6 +782,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             "  /goal abandon <ID>    — 暂停目标\n" +
             "  /goal stop            — 停止调度器\n" +
             "  /goal resume          — 恢复调度器\n" +
+            "  /goal logs [日期]     — 查看日志\n" +
             "  /goal clear --confirm — 清空所有数据\n\n" +
             "新架构特性:\n" +
             "  - 统一任务调度器\n" +

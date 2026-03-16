@@ -1,0 +1,21 @@
+{
+  "name": "@pi-coding-agent/extension-goal-driven",
+  "version": "0.1.0",
+  "description": "Goal-Driven Agent extension for Coding Agent CLI",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.58.0",
+    "@mariozechner/pi-ai": "^0.58.0",
+    "@mariozechner/pi-tui": "^0.58.0",
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "keywords": [
+    "goal-driven",
+    "task-scheduler",
+    "pi-extension"
+  ]
+}

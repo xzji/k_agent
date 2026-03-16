@@ -222,6 +222,14 @@ export interface Task {
   pendingQuestions?: QuestionBatch;
   collectedInfo?: Record<string, unknown>;
 
+  // Notification strategy (from buy_car_demo_showcase)
+  valueThreshold?: number;        // 价值阈值 0-1，决定是否推送
+  shouldNotify?: boolean;         // 是否应该推送给用户
+  notifyReason?: string;          // 推送原因说明
+  notifyTiming?: string;          // 推送时机（如"立即","完成后","每天一次"等）
+  requiresUserInput?: boolean;    // 是否需要用户输入
+  userRole?: string;              // 用户在此任务中的角色
+
   // Execution tracking
   executionHistory: ExecutionRecord[];
 

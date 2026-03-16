@@ -59,6 +59,16 @@ export { SubGoalStore } from './sub-goal/sub-goal-store';
 export { NotificationQueue } from './output-layer/notification-queue';
 export { ValueAssessor, type ValueAssessment } from './output-layer/value-assessor';
 
+// Execution layer
+export { ExecutionPipeline } from './execution/execution-pipeline';
+
+// Runtime adapters
+export {
+  ClaudeLLMChannel,
+  SimpleIdleDetector,
+  LocalExecutionPipeline,
+} from './runtime/claude-llm-adapter';
+
 // Orchestrator
 export {
   GoalOrchestrator,
@@ -101,6 +111,7 @@ export const ARCHITECTURE = {
     'PlanPresenter - Plan presentation and user confirmation',
     'ValueAssessor - Task result value assessment and smart notification',
     'UnifiedTaskScheduler - Core scheduling engine with value-based notification',
+    'ExecutionPipeline - Task execution with type-specific handling',
     'TaskStore - JSON-based task persistence',
     'SubGoalStore - Sub-goal persistence',
     'TaskDependencyGraph - DAG management with cycle detection',
@@ -109,6 +120,8 @@ export const ARCHITECTURE = {
     'KnowledgeStore - Goal-scoped knowledge reuse',
     'GoalStore - Goal and dimension management',
     'NotificationQueue - Priority-based notification system',
+    'ClaudeLLMChannel - LLM adapter for Claude API integration',
+    'SimpleIdleDetector - User idle state detection',
   ],
   hierarchy: [
     'Goal - User objective',

@@ -147,7 +147,24 @@ Always respond in valid JSON format.`,
       });
 
       // Transform the result into proper Question objects
-      const questions: Question[] = result.questions.slice(0, 2).map((q, index) => ({
+      // Handle case where result or result.questions might be undefined
+      const rawQuestions = result?.questions || [];
+      if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
+        console.warn('[ContextGatherer] No questions generated, using fallback');
+        return {
+          questions: [
+            {
+              id: 'fallback-1',
+              question: `Could you tell me more about what you're looking for with "${goal.title}"?`,
+              purpose: 'Understand the core intent behind the goal',
+              expectedType: 'string' as const,
+            },
+          ],
+          context: 'Using fallback questions due to empty response',
+        };
+      }
+
+      const questions: Question[] = rawQuestions.slice(0, 2).map((q) => ({
         id: q.id || `q-${generateId().slice(0, 8)}`,
         question: q.question,
         purpose: q.purpose,

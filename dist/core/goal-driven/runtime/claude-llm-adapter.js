@@ -24,12 +24,24 @@ class ClaudeLLMChannel {
         };
     }
     /**
+     * Chat - 对话式响应
+     */
+    async chat(params) {
+        const content = params.messages[params.messages.length - 1]?.content || '';
+        // 根据上下文生成合适的响应
+        const response = this.generateChatResponse(content, params.systemPrompt || '');
+        return {
+            content: typeof response === 'string' ? response : JSON.stringify(response, null, 2),
+            usage: { total_tokens: content.length + JSON.stringify(response).length },
+        };
+    }
+    /**
      * Chat JSON - 对话式 JSON 响应
      */
     async chatJSON(params) {
         const content = params.messages[0]?.content || '';
         // 根据上下文生成合适的响应
-        const response = this.generateChatResponse(content, params.systemPrompt);
+        const response = this.generateChatResponse(content, params.systemPrompt || '');
         return response;
     }
     /**

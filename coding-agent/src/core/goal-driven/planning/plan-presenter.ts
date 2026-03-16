@@ -22,7 +22,15 @@ import {
  * Plan report structure
  */
 export interface PlanReport {
-  summary: string;
+  goalId: string;
+  goalTitle: string;
+  summary: {
+    subGoalCount: number;
+    taskCount: number;
+    notifyTaskCount: number;
+    interactiveTaskCount: number;
+    estimatedDuration: string;
+  };
   subGoals: Array<{
     id: string;
     name: string;
@@ -38,6 +46,10 @@ export interface PlanReport {
       priority: string;
       hierarchyLevel: string;
       expectedResult: string;
+      shouldNotify?: boolean;
+      notifyReason?: string;
+      notifyTiming?: string;
+      requiresUserInput?: boolean;
     }>;
   }>;
   timeline: string;
@@ -87,33 +99,45 @@ export class PlanPresenter {
     const subGoals = await this.subGoalStore.getSubGoalsByGoal(goalId);
 
     // Build sub-goal and task structure
-    const subGoalReports = await Promise.all(
-      subGoals.map(async (sg) => {
-        const tasks: Task[] = [];
-        for (const taskId of sg.taskIds) {
-          const task = await this.taskStore.getTask(taskId);
-          if (task) tasks.push(task);
-        }
+    const subGoalReports: PlanReport['subGoals'] = [];
+    let totalTasks = 0;
+    let notifyTasks = 0;
+    let interactiveTasks = 0;
 
-        return {
-          id: sg.id,
-          name: sg.name,
-          description: sg.description,
-          priority: sg.priority,
-          status: sg.status,
-          weight: sg.weight,
-          estimatedDuration: sg.estimatedDuration,
-          tasks: tasks.map((t) => ({
-            id: t.id,
-            title: t.title,
-            type: t.type,
-            priority: t.priority,
-            hierarchyLevel: t.hierarchyLevel ?? 'standard',
-            expectedResult: t.expectedResult?.description ?? '',
-          })),
-        };
-      })
-    );
+    for (const sg of subGoals) {
+      const tasks: Task[] = [];
+      for (const taskId of sg.taskIds) {
+        const task = await this.taskStore.getTask(taskId);
+        if (task) {
+          tasks.push(task);
+          totalTasks++;
+          if (task.shouldNotify) notifyTasks++;
+          if (task.requiresUserInput) interactiveTasks++;
+        }
+      }
+
+      subGoalReports.push({
+        id: sg.id,
+        name: sg.name,
+        description: sg.description,
+        priority: sg.priority,
+        status: sg.status,
+        weight: sg.weight,
+        estimatedDuration: sg.estimatedDuration,
+        tasks: tasks.map((t) => ({
+          id: t.id,
+          title: t.title,
+          type: t.type,
+          priority: t.priority,
+          hierarchyLevel: t.hierarchyLevel ?? 'standard',
+          expectedResult: t.expectedResult?.description ?? '',
+          shouldNotify: t.shouldNotify,
+          notifyReason: t.notifyReason,
+          notifyTiming: t.notifyTiming,
+          requiresUserInput: t.requiresUserInput,
+        })),
+      });
+    }
 
     // Calculate timeline
     const totalDuration = subGoals.reduce(
@@ -124,10 +148,18 @@ export class PlanPresenter {
     // Generate notification strategy based on goal priority
     const notificationStrategy = this.generateNotificationStrategy(goal);
 
-    // Generate summary using LLM
-    const summary = await this.generateSummary(goal, subGoals);
+    // Build summary object
+    const summary = {
+      subGoalCount: subGoals.length,
+      taskCount: totalTasks,
+      notifyTaskCount: notifyTasks,
+      interactiveTaskCount: interactiveTasks,
+      estimatedDuration: this.formatTimeline(totalDuration),
+    };
 
     return {
+      goalId,
+      goalTitle: goal.title,
       summary,
       subGoals: subGoalReports,
       timeline: this.formatTimeline(totalDuration),
@@ -209,7 +241,7 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
     const notification: Omit<Notification, 'id' | 'createdAt'> = {
       type: 'confirmation',
       priority: 'high',
-      title: `【计划确认】${report.summary.slice(0, 30)}...`,
+      title: `【计划确认】${report.goalTitle.slice(0, 30)}...`,
       content: planContent,
       goalId,
     };
@@ -231,7 +263,12 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
     const lines: string[] = [];
 
     lines.push('## 计划概要');
-    lines.push(report.summary);
+    lines.push(`目标: ${report.goalTitle}`);
+    lines.push(`子目标数: ${report.summary.subGoalCount}`);
+    lines.push(`任务总数: ${report.summary.taskCount}`);
+    lines.push(`需要推送: ${report.summary.notifyTaskCount} 个任务`);
+    lines.push(`需要您参与: ${report.summary.interactiveTaskCount} 个任务`);
+    lines.push(`预计耗时: ${report.summary.estimatedDuration}`);
     lines.push('');
 
     lines.push('## 执行阶段');
