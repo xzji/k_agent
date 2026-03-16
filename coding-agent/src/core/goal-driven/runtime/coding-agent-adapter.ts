@@ -175,7 +175,7 @@ export class CodingAgentLLMChannel {
         systemPrompt: options?.systemPrompt as string || '',
         messages: [{ role: 'user', content: prompt }],
         temperature: options?.temperature as number ?? 0.7,
-        maxTokens: options?.maxTokens as number ?? 4096,
+        maxTokens: options?.maxTokens as number ?? 50000,
       });
 
       const duration = Date.now() - startTime;
@@ -219,14 +219,15 @@ export class CodingAgentLLMChannel {
       await logLLMRequest(fullPrompt, { temperature: params.temperature }, goalId, taskId);
 
       const result = await this.fetchChatCompletion({
-        systemPrompt: params.systemPrompt + '\n\nYou MUST respond with valid JSON only. Do not include any text, explanation, or markdown formatting outside the JSON object. Return ONLY the JSON.',
+        systemPrompt: params.systemPrompt + '\n\nYou MUST respond with valid JSON only. Do not include any text, explanation, or markdown formatting outside the JSON object. Return ONLY the JSON. Keep your response concise to avoid truncation.',
         messages: params.messages.map(m => ({ role: m.role, content: m.content })),
         temperature: params.temperature ?? 0.7,
-        maxTokens: 8192,
+        maxTokens: 50000,
       });
 
       const duration = Date.now() - startTime;
       console.log('[LLMChannel] Response received, length:', result.content.length);
+      console.log('[LLMChannel] Finish reason:', result.finishReason);
 
       if (result.content.length > 0 && result.content.length < 500) {
         console.log('[LLMChannel] Content preview:', result.content);
@@ -234,11 +235,16 @@ export class CodingAgentLLMChannel {
         console.log('[LLMChannel] Content preview:', result.content.slice(0, 500) + '...');
       }
 
+      // Check if response was truncated
+      if (result.finishReason === 'length') {
+        console.warn('[LLMChannel] Warning: Response was truncated due to max_tokens limit');
+      }
+
       // 记录 LLM 响应日志
       await logLLMResponse(result.content, duration, goalId, taskId);
 
       // Parse JSON response
-      return this.parseJSONResponse<T>(result.content);
+      return this.parseJSONResponse<T>(result.content, result.finishReason === 'length');
     } catch (error) {
       const duration = Date.now() - startTime;
       await logError(error instanceof Error ? error : String(error), 'llm_response', goalId, taskId, { duration });
@@ -248,9 +254,9 @@ export class CodingAgentLLMChannel {
   }
 
   /**
-   * Parse JSON response with fallback
+   * Parse JSON response with fallback and truncation recovery
    */
-  private parseJSONResponse<T>(content: string): T {
+  private parseJSONResponse<T>(content: string, isTruncated: boolean = false): T {
     // Try to find JSON block
     let jsonStr = content;
 
@@ -284,9 +290,112 @@ export class CodingAgentLLMChannel {
     try {
       return JSON.parse(jsonStr) as T;
     } catch (parseError) {
+      // If truncated, try to fix incomplete JSON
+      if (isTruncated || this.isLikelyTruncated(jsonStr)) {
+        console.log('[LLMChannel] Attempting to fix truncated JSON...');
+        const fixed = this.attemptToFixTruncatedJSON(jsonStr);
+        if (fixed) {
+          try {
+            return JSON.parse(fixed) as T;
+          } catch {
+            // Fall through to original error
+          }
+        }
+      }
+
       console.error('[LLMChannel] JSON parse error:', parseError);
       console.error('[LLMChannel] Attempted to parse:', jsonStr.slice(0, 200));
       throw new Error(`Failed to parse JSON response: ${parseError}`);
+    }
+  }
+
+  /**
+   * Check if JSON string is likely truncated
+   */
+  private isLikelyTruncated(jsonStr: string): boolean {
+    // Check for common truncation indicators
+    const openBraces = (jsonStr.match(/\{/g) || []).length;
+    const closeBraces = (jsonStr.match(/\}/g) || []).length;
+    const openBrackets = (jsonStr.match(/\[/g) || []).length;
+    const closeBrackets = (jsonStr.match(/\]/g) || []).length;
+
+    // If braces/brackets don't match, it's likely truncated
+    return openBraces !== closeBraces || openBrackets !== closeBrackets;
+  }
+
+  /**
+   * Attempt to fix truncated JSON by closing open structures
+   */
+  private attemptToFixTruncatedJSON(jsonStr: string): string | null {
+    let fixed = jsonStr.trim();
+
+    // Remove trailing commas
+    fixed = fixed.replace(/,\s*$/, '');
+    fixed = fixed.replace(/,\s*([}\]])/g, '$1');
+
+    // Count open/close braces and brackets
+    let openBraces = 0;
+    let openBrackets = 0;
+    let inString = false;
+    let escapeNext = false;
+
+    for (const char of fixed) {
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      if (char === '\\') {
+        escapeNext = true;
+        continue;
+      }
+      if (char === '"' && !escapeNext) {
+        inString = !inString;
+        continue;
+      }
+      if (!inString) {
+        if (char === '{') openBraces++;
+        else if (char === '}') openBraces--;
+        else if (char === '[') openBrackets++;
+        else if (char === ']') openBrackets--;
+      }
+    }
+
+    // Close any open strings
+    if (inString) {
+      fixed += '"';
+    }
+
+    // Close any open structures (in reverse order of opening)
+    // First, close any incomplete key-value pairs
+    const lastColon = fixed.lastIndexOf(':');
+    const lastComma = fixed.lastIndexOf(',');
+    const lastOpenBrace = fixed.lastIndexOf('{');
+    const lastOpenBracket = fixed.lastIndexOf('[');
+
+    // If we have an open brace without a value after the last colon, add null
+    if (lastColon > lastOpenBrace && lastColon > lastComma) {
+      const afterColon = fixed.slice(lastColon + 1).trim();
+      if (!afterColon || afterColon === '') {
+        fixed += ' null';
+      }
+    }
+
+    // Close brackets and braces
+    while (openBrackets > 0) {
+      fixed += ']';
+      openBrackets--;
+    }
+    while (openBraces > 0) {
+      fixed += '}';
+      openBraces--;
+    }
+
+    try {
+      JSON.parse(fixed);
+      console.log('[LLMChannel] Successfully fixed truncated JSON');
+      return fixed;
+    } catch {
+      return null;
     }
   }
 

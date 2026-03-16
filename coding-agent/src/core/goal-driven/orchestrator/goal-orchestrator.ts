@@ -380,6 +380,30 @@ export class GoalOrchestrator {
     await this.planPresenter.handlePlanModification(goalId, modificationRequest);
   }
 
+  /**
+   * Activate tasks after plan confirmation
+   * Changes task status from 'awaiting_confirmation' to 'blocked' or 'ready' based on dependencies
+   */
+  async activateTasksAfterConfirmation(goalId: string): Promise<void> {
+    const state = this.state.get(goalId);
+    if (!state) {
+      throw new Error('Goal not found in orchestrator state');
+    }
+
+    // Update all tasks from awaiting_confirmation to blocked/ready based on dependencies
+    for (const taskId of state.taskIds) {
+      const task = await this.taskStore.getTask(taskId);
+      if (task && task.status === 'awaiting_confirmation') {
+        // Check if dependencies are met
+        const depsMet = await this.scheduler.checkDependencies(taskId);
+        const newStatus = depsMet ? 'ready' : 'blocked';
+        await this.taskStore.updateStatus(taskId, newStatus);
+      }
+    }
+
+    console.log(`[GoalOrchestrator] Activated ${state.taskIds.length} tasks for goal ${goalId}`);
+  }
+
   // ============================================================================
   // Phase 7: 启动执行
   // ============================================================================

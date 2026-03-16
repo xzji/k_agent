@@ -184,7 +184,7 @@ export class TaskStore implements ITaskStore {
     const nowTime = now();
 
     return allTasks.filter((task) => {
-      // Must be pending or ready status
+      // Must be pending or ready status (not awaiting_confirmation or blocked)
       if (!['pending', 'ready'].includes(task.status)) {
         return false;
       }

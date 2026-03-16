@@ -29,14 +29,15 @@ export type TaskType =
  * Task status in the state machine
  */
 export type TaskStatus =
-  | 'pending'        // Waiting to be scheduled
-  | 'blocked'        // Dependencies not met
-  | 'ready'          // Ready for execution
-  | 'in_progress'    // Currently executing
-  | 'waiting_user'   // Waiting for user input
-  | 'completed'      // Successfully completed
-  | 'failed'         // Execution failed
-  | 'cancelled';     // Cancelled by user or system
+  | 'pending'              // Waiting to be scheduled
+  | 'awaiting_confirmation' // Waiting for plan confirmation (before execution)
+  | 'blocked'              // Dependencies not met
+  | 'ready'                // Ready for execution
+  | 'in_progress'          // Currently executing
+  | 'waiting_user'         // Waiting for user input
+  | 'completed'            // Successfully completed
+  | 'failed'               // Execution failed
+  | 'cancelled';           // Cancelled by user or system
 
 /**
  * Task hierarchy level
@@ -221,6 +222,7 @@ export interface Task {
   // Interactive task specific
   pendingQuestions?: QuestionBatch;
   collectedInfo?: Record<string, unknown>;
+  gatheringRound?: number;  // Current round of information gathering (max 3 rounds)
 
   // Notification strategy (from buy_car_demo_showcase)
   valueThreshold?: number;        // 价值阈值 0-1，决定是否推送

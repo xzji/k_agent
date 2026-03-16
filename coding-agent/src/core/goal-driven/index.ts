@@ -69,12 +69,52 @@ export {
   LocalExecutionPipeline,
 } from './runtime/claude-llm-adapter';
 
+// Background execution
+export {
+  AgentPiBackgroundExecutor,
+  type ExecuteTaskEvent,
+  type TaskResultEvent,
+  type TaskProgressEvent,
+  type TaskHeartbeatEvent,
+  type BackgroundExecutionConfig,
+} from './runtime/agent-pi-executor';
+
+// Tool Provider
+export {
+  ToolProvider,
+  type ToolInfo,
+  initToolProvider,
+  getToolProvider,
+} from './runtime/tool-provider';
+
+export {
+  BackgroundSessionManager,
+  type BackgroundSessionConfig,
+  type BackgroundSessionHandle,
+  type BackgroundSessionOutput,
+  type BackgroundSessionResult,
+  type BackgroundSessionEvent,
+  initBackgroundSessionManager,
+  getBackgroundSessionManager,
+} from './runtime/background-session';
+
 // Orchestrator
 export {
   GoalOrchestrator,
   type OrchestrationPhase,
   type OrchestrationState,
 } from './orchestrator/goal-orchestrator';
+
+// Input handlers
+export {
+  InfoCollectionHandler,
+  PlanConfirmationHandler,
+  ExecutionHandler,
+  findActiveGoal,
+  type InputContext,
+  type HandlerResult,
+  type InteractionHandler,
+} from './handlers';
 
 // Utilities
 export {
@@ -108,6 +148,17 @@ export {
   type LogLevel,
   type LogCategory,
 } from './utils/logger';
+
+// Configuration
+export {
+  GoalDrivenConfigStore,
+  ConfigPanel,
+  DEFAULT_GOAL_DRIVEN_CONFIG,
+  CONFIG_RANGES,
+  CONFIG_LABELS,
+  CONFIG_DESCRIPTIONS,
+  type GoalDrivenConfig,
+} from './config/index.js';
 
 /**
  * Version information

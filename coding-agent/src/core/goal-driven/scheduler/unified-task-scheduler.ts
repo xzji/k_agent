@@ -22,10 +22,15 @@ import {
   type IGoalStore,
   type INotificationQueue,
   type IKnowledgeStore,
+  type ISubGoalStore,
 } from '../types';
 import { TaskDependencyGraph } from '../task/task-dependency';
 import { ValueAssessor, type ValueAssessment } from '../output-layer/value-assessor';
 import { Semaphore, getPriorityWeight, now, sleep } from '../utils';
+import type { AgentPiBackgroundExecutor, TaskResultEvent } from '../runtime/agent-pi-executor';
+import type { EventBus } from '../../event-bus.js';
+import type { GoalDrivenConfigStore } from '../config/store.js';
+import { getToolProvider } from '../runtime/tool-provider.js';
 
 /**
  * Execution pipeline interface
@@ -71,6 +76,7 @@ export class UnifiedTaskScheduler {
   // Core components
   private taskStore: ITaskStore;
   private goalStore: IGoalStore;
+  private subGoalStore: ISubGoalStore;
   private knowledgeStore: IKnowledgeStore;
   private notificationQueue: INotificationQueue;
   private dependencyGraph: TaskDependencyGraph;
@@ -78,6 +84,13 @@ export class UnifiedTaskScheduler {
   private idleDetector: IdleDetector;
   private userProfile: UserProfile;
   private valueAssessor: ValueAssessor;
+
+  // Background execution (optional)
+  private backgroundExecutor?: AgentPiBackgroundExecutor;
+  private eventBus?: EventBus;
+  private useBackgroundExecution = false;
+  private dispatchedTasks = new Map<string, { goalId: string; startTime: number }>();
+  private eventUnsubscribe?: () => void;
 
   // State
   private running = false;
@@ -93,9 +106,13 @@ export class UnifiedTaskScheduler {
     lastCycleAt: 0,
   };
 
+  private configStore?: GoalDrivenConfigStore;
+  private configUnsubscribe?: () => void;
+
   constructor(
     taskStore: ITaskStore,
     goalStore: IGoalStore,
+    subGoalStore: ISubGoalStore,
     knowledgeStore: IKnowledgeStore,
     notificationQueue: INotificationQueue,
     dependencyGraph: TaskDependencyGraph,
@@ -103,10 +120,14 @@ export class UnifiedTaskScheduler {
     idleDetector: IdleDetector,
     userProfile: UserProfile,
     valueAssessor: ValueAssessor,
-    config?: Partial<SchedulerConfig>
+    config?: Partial<SchedulerConfig>,
+    backgroundExecutor?: AgentPiBackgroundExecutor,
+    eventBus?: EventBus,
+    configStore?: GoalDrivenConfigStore
   ) {
     this.taskStore = taskStore;
     this.goalStore = goalStore;
+    this.subGoalStore = subGoalStore;
     this.knowledgeStore = knowledgeStore;
     this.notificationQueue = notificationQueue;
     this.dependencyGraph = dependencyGraph;
@@ -114,16 +135,39 @@ export class UnifiedTaskScheduler {
     this.idleDetector = idleDetector;
     this.userProfile = userProfile;
     this.valueAssessor = valueAssessor;
+    this.backgroundExecutor = backgroundExecutor;
+    this.eventBus = eventBus;
+    this.configStore = configStore;
+
+    // Use config store values if available, otherwise use defaults
+    const maxConcurrent = configStore?.get('maxConcurrentTasks') ?? 3;
+    const cycleIntervalMs = configStore?.get('schedulerCycleIntervalMs') ?? 60000;
 
     this.config = {
-      maxConcurrent: 3,
+      maxConcurrent,
       defaultPriority: 'medium',
-      cycleIntervalMs: 60000,
+      cycleIntervalMs,
       enableConcurrency: true,
       ...config,
     };
 
     this.semaphore = new Semaphore(this.config.maxConcurrent);
+
+    // Enable background execution if executor is provided
+    if (backgroundExecutor && eventBus) {
+      this.useBackgroundExecution = true;
+    }
+
+    // Listen for config changes
+    if (configStore) {
+      this.configUnsubscribe = configStore.onChange((newConfig) => {
+        this.config.maxConcurrent = newConfig.maxConcurrentTasks;
+        this.config.cycleIntervalMs = newConfig.schedulerCycleIntervalMs;
+        // Recreate semaphore with new capacity
+        this.semaphore = new Semaphore(newConfig.maxConcurrentTasks);
+        console.log(`[Scheduler] Config updated: maxConcurrent=${newConfig.maxConcurrentTasks}, cycleInterval=${newConfig.schedulerCycleIntervalMs}ms`);
+      });
+    }
   }
 
   /**
@@ -138,6 +182,12 @@ export class UnifiedTaskScheduler {
     this.running = true;
     console.log('[Scheduler] Started');
 
+    // Setup background execution event listener
+    if (this.useBackgroundExecution && this.eventBus) {
+      this.eventUnsubscribe = this.eventBus.on('goal_driven:task_result', this.handleTaskResult.bind(this));
+      console.log('[Scheduler] Background execution enabled');
+    }
+
     // Start the first cycle
     this.scheduleNextCycle(0);
   }
@@ -151,6 +201,18 @@ export class UnifiedTaskScheduler {
     if (this.loopTimer) {
       clearTimeout(this.loopTimer);
       this.loopTimer = null;
+    }
+
+    // Unsubscribe from events
+    if (this.eventUnsubscribe) {
+      this.eventUnsubscribe();
+      this.eventUnsubscribe = undefined;
+    }
+
+    // Unsubscribe from config changes
+    if (this.configUnsubscribe) {
+      this.configUnsubscribe();
+      this.configUnsubscribe = undefined;
     }
 
     // Wait for running tasks to complete
@@ -346,6 +408,8 @@ export class UnifiedTaskScheduler {
       : [];
 
     for (const task of allTasks) {
+      // Only process blocked or pending tasks, not awaiting_confirmation
+      // awaiting_confirmation tasks should only be activated after plan confirmation
       if (task.status === 'blocked' || task.status === 'pending') {
         await this.dependencyGraph.updateTaskStatusFromDependencies(task.id);
       }
@@ -550,6 +614,12 @@ export class UnifiedTaskScheduler {
    * Execute task based on its type
    */
   private async executeByType(task: Task, type: TaskType): Promise<ExecutionResult> {
+    // Check if we should use background execution for this task
+    if (this.shouldUseBackgroundExecution(task)) {
+      return this.executeWithBackgroundExecutor(task);
+    }
+
+    // Otherwise use direct execution
     switch (type) {
       case 'exploration':
         return this.executeExplorationTask(task);
@@ -565,6 +635,135 @@ export class UnifiedTaskScheduler {
         return this.executeEventTriggeredTask(task);
       default:
         throw new Error(`Unknown task type: ${type}`);
+    }
+  }
+
+  /**
+   * Check if task should use background execution
+   */
+  private shouldUseBackgroundExecution(task: Task): boolean {
+    if (!this.useBackgroundExecution) return false;
+
+    // Only non-interactive tasks can use background execution
+    if (task.type === 'interactive') return false;
+
+    // Check if task requires tools that need background execution
+    const tools = task.execution.requiredTools;
+    if (tools.length > 0) return true;
+
+    // Check task priority - high priority tasks use background for faster execution
+    if (task.priority === 'high' || task.priority === 'critical') return true;
+
+    return false;
+  }
+
+  /**
+   * Execute task using background executor
+   */
+  private async executeWithBackgroundExecutor(task: Task): Promise<ExecutionResult> {
+    if (!this.eventBus) {
+      throw new Error('EventBus not available for background execution');
+    }
+
+    console.log(`[Scheduler] Dispatching task ${task.id} to background executor`);
+
+    // Mark task as dispatched
+    this.dispatchedTasks.set(task.id, { goalId: task.goalId, startTime: now() });
+
+    // Get relevant knowledge
+    const knowledgeEntries = await this.knowledgeStore.getRelevantKnowledgeForTask(
+      task,
+      task.execution.agentPrompt,
+      { maxResults: 5 }
+    );
+
+    // Dispatch to background executor via EventBus
+    this.eventBus.emit('goal_driven:execute_task', {
+      taskId: task.id,
+      goalId: task.goalId,
+      agentPrompt: task.execution.agentPrompt,
+      requiredTools: task.execution.requiredTools,
+      contextKnowledge: knowledgeEntries,
+      timeoutMs: task.execution.estimatedDuration ? task.execution.estimatedDuration * 1000 : undefined,
+    });
+
+    // Return a pending result - actual result will come via event
+    return {
+      success: true,
+      output: `🚀 任务已派发到后台执行器\n\n` +
+        `任务 "${task.title}" 正在后台通过 Agent Pi 执行，使用工具: ${task.execution.requiredTools.join(', ') || '无'}\n\n` +
+        `执行完成后将通过通知推送结果。`,
+      duration: 0,
+    };
+  }
+
+  /**
+   * Handle task result from background executor
+   */
+  private async handleTaskResult(payload: TaskResultEvent['payload']): Promise<void> {
+    const { taskId, goalId, success, output, error, duration, knowledgeEntries } = payload;
+
+    console.log(`[Scheduler] Received result for task ${taskId}: ${success ? 'success' : 'failed'}`);
+
+    // Remove from dispatched tasks
+    this.dispatchedTasks.delete(taskId);
+
+    try {
+      // Get the task
+      const task = await this.taskStore.getTask(taskId);
+      if (!task) {
+        console.warn(`[Scheduler] Task ${taskId} not found`);
+        return;
+      }
+
+      // Build result
+      const result: ExecutionResult = {
+        success,
+        output,
+        error,
+        duration,
+        knowledgeEntries,
+      };
+
+      // Update task status
+      const newStatus: TaskStatus = success ? 'completed' : 'failed';
+      await this.taskStore.updateStatus(task.id, newStatus, {
+        result,
+        completedAt: now(),
+      });
+
+      // Add execution record
+      await this.taskStore.addExecutionRecord(task.id, {
+        timestamp: now(),
+        status: success ? 'success' : 'failed',
+        duration,
+        summary: output?.slice(0, 200),
+      });
+
+      // Update stats
+      this.stats.tasksExecuted++;
+      if (!success) {
+        this.stats.tasksFailed++;
+      }
+
+      // Handle recurring tasks
+      if (task.type === 'recurring' && task.schedule && success) {
+        await this.scheduleNextExecution(task);
+      }
+
+      // Handle adaptive adjustments
+      await this.handleAdaptiveAdjustments(task, result);
+
+      // Assess value and notify
+      if (success && output) {
+        await this.assessAndNotify(task, result);
+      }
+
+      // Update dependency graph
+      await this.dependencyGraph.updateAllTaskStatuses(goalId);
+
+    } catch (err) {
+      console.error(`[Scheduler] Error handling task result for ${taskId}:`, err);
     }
   }
 
@@ -849,7 +1048,7 @@ Please ensure this execution provides fresh insights and varies from previous ru
     const goal = await this.goalStore.getGoal(task.goalId);
 
     // Build notification content with value context
-    const content = this.buildNotificationContent(task, result, assessment);
+    const content = await this.buildNotificationContent(task, result, assessment);
 
     const notification: Omit<Notification, 'id' | 'createdAt'> = {
       type: 'report',
@@ -866,31 +1065,94 @@ Please ensure this execution provides fresh insights and varies from previous ru
   /**
    * Build notification content with value information
    */
-  private buildNotificationContent(
+  private async buildNotificationContent(
     task: Task,
     result: ExecutionResult,
     assessment: ValueAssessment
-  ): string {
+  ): Promise<string> {
     const lines: string[] = [];
 
-    // Result output
-    lines.push('## 执行结果');
-    lines.push(result.output?.slice(0, 1500) || '无输出');
-    if ((result.output?.length || 0) > 1500) {
-      lines.push('... (内容已截断)');
+    // Get sub-goal info if available
+    let subGoalName = '';
+    if (task.subGoalId) {
+      const subGoal = await this.subGoalStore.getSubGoal(task.subGoalId);
+      if (subGoal) {
+        subGoalName = subGoal.name;
+      }
     }
 
-    // Value context
-    lines.push('\n## 价值评估');
+    // Task type label
+    const typeLabels: Record<string, string> = {
+      exploration: '信息收集',
+      one_time: '单次任务',
+      recurring: '周期任务',
+      monitoring: '监控任务',
+      event_triggered: '事件触发',
+      interactive: '交互任务',
+    };
+    const taskTypeLabel = typeLabels[task.type] || task.type;
+
+    // Task context header
+    lines.push(`## 📋 ${task.title}`);
+    lines.push('');
+
+    // Sub-goal info
+    if (subGoalName) {
+      lines.push(`**所属阶段**: ${subGoalName}`);
+    }
+
+    // Task type and priority
+    lines.push(`**任务类型**: ${taskTypeLabel} | **优先级**: ${task.priority}`);
+    lines.push('');
+
+    // Task description
+    if (task.description) {
+      lines.push(`**任务说明**: ${task.description}`);
+      lines.push('');
+    }
+
+    // Expected result
+    if (task.expectedResult?.description) {
+      lines.push(`**预期产出**: ${task.expectedResult.description}`);
+      lines.push('');
+    }
+
+    // Result output - focus on the actual collected information
+    lines.push('---');
+    lines.push('');
+
+    if (task.type === 'exploration') {
+      // For exploration tasks, emphasize the collected information
+      lines.push('## 📊 收集到的信息');
+      lines.push('');
+    } else {
+      lines.push('## 📤 执行结果');
+      lines.push('');
+    }
+
+    // Output content (truncated if too long)
+    const output = result.output?.slice(0, 2000) || '无输出';
+    lines.push(output);
+    if ((result.output?.length || 0) > 2000) {
+      lines.push('');
+      lines.push('... (内容已截断，更多信息请查看完整报告)');
+    }
+
+    // Value assessment (collapsed for cleaner look)
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push(`<details>`);
+    lines.push(`<summary>📈 价值评估 (点击展开)</summary>`);
+    lines.push('');
     lines.push(`- 相关度: ${Math.round(assessment.valueDimensions.relevance * 100)}%`);
     lines.push(`- 新颖度: ${Math.round(assessment.valueDimensions.novelty * 100)}%`);
     lines.push(`- 可操作性: ${Math.round(assessment.valueDimensions.actionability * 100)}%`);
-    lines.push(`\n**总体评分: ${Math.round(assessment.valueScore * 100)}/100**`);
-
-    // Reasoning
+    lines.push(`- **总体评分**: ${Math.round(assessment.valueScore * 100)}/100`);
     if (assessment.reasoning) {
-      lines.push(`\n*${assessment.reasoning}*`);
+      lines.push(`- ${assessment.reasoning}`);
     }
+    lines.push(`</details>`);
 
     return lines.join('\n');
   }
@@ -967,5 +1229,13 @@ Please ensure this execution provides fresh insights and varies from previous ru
     };
 
     await this.executeUnifiedTask(unifiedTask);
+  }
+
+  /**
+   * Check if task dependencies are met
+   * Exposed for GoalOrchestrator to use
+   */
+  async checkDependencies(taskId: string): Promise<boolean> {
+    return this.dependencyGraph.checkDependencies(taskId);
   }
 }

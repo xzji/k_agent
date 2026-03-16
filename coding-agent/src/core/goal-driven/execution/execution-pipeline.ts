@@ -138,15 +138,25 @@ export class ExecutionPipeline {
     task: Task,
     prompt: string
   ): Promise<ExecutionResult> {
-    const systemPrompt = `你是一个信息收集专家。你的任务是收集和整理相关信息。
+    const systemPrompt = `你是一个信息收集专家。请收集和整理相关信息，并以**对用户有价值的方式**返回结果。
 
 执行指南：
-1. 搜索相关信息
-2. 整理和结构化信息
-3. 提取关键要点
-4. 返回结构化的结果
+1. 搜索和收集相关信息
+2. 提取关键事实、数据、结论
+3. **直接呈现收集到的有价值信息**，而不是描述你做了什么
+4. 使用结构化格式（列表、表格等）便于阅读
 
-请确保信息准确、完整，并以JSON格式返回结果。`;
+错误示例（不要这样）：
+"我搜索了相关信息，找到了以下内容..."
+"根据您的要求，我收集了以下资料..."
+
+正确示例（应该这样）：
+"## 雅思口语评分标准
+- 流利度：占25%，要求..."
+"## 推荐备考书籍
+1. 《剑桥雅思真题》- 官方出品，包含..."
+
+请确保信息准确、具体、对用户有实际帮助。`;
 
     try {
       const result = await this.llm.chat({
@@ -158,7 +168,7 @@ export class ExecutionPipeline {
       // Parse and structure the result
       const structuredResult = this.parseExplorationResult(result.content);
 
-      // Create knowledge entry
+      // Create knowledge entry with the actual collected information
       const knowledgeEntry: KnowledgeEntry = {
         id: `k-${generateId().slice(0, 8)}`,
         goalId: task.goalId,
@@ -171,9 +181,12 @@ export class ExecutionPipeline {
         createdAt: now(),
       };
 
+      // Build valuable output - the actual information collected, not process description
+      const valuableOutput = this.buildExplorationOutput(result.content, structuredResult);
+
       return {
         success: true,
-        output: result.content,
+        output: valuableOutput,
         outputType: 'information',
         outputFormat: 'markdown',
         tokenUsage: result.usage?.total_tokens,
@@ -191,6 +204,58 @@ export class ExecutionPipeline {
         duration: 0,
       };
     }
+  }
+
+  /**
+   * Build valuable exploration output - focus on collected information, not process
+   */
+  private buildExplorationOutput(
+    rawContent: string,
+    structuredResult: { summary: string; keyPoints: string[] }
+  ): string {
+    const lines: string[] = [];
+
+    // Add summary as header
+    lines.push(`## ${structuredResult.summary}`);
+    lines.push('');
+
+    // Add key points if available
+    if (structuredResult.keyPoints.length > 0) {
+      lines.push('### 关键信息');
+      for (const point of structuredResult.keyPoints) {
+        lines.push(`- ${point}`);
+      }
+      lines.push('');
+    }
+
+    // Add detailed content (cleaned of process language)
+    const cleanedContent = this.cleanProcessLanguage(rawContent);
+    lines.push('### 详细信息');
+    lines.push(cleanedContent);
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Remove process/description language from content
+   */
+  private cleanProcessLanguage(content: string): string {
+    // Remove common process phrases
+    const processPatterns = [
+      /^我[搜索|查找|收集|整理|分析].*?(：|:)\s*/gm,
+      /^根据您的要求.*?(：|:)\s*/gm,
+      /^以下是[我找到|收集到].*?(：|:)\s*/gm,
+      /^(首先|其次|然后|最后)[,，]?\s*/gm,
+      /^让我来.*?(：|:)\s*/gm,
+      /我已经.*?(：|:)\s*/gm,
+    ];
+
+    let cleaned = content;
+    for (const pattern of processPatterns) {
+      cleaned = cleaned.replace(pattern, '');
+    }
+
+    return cleaned.trim();
   }
 
   /**

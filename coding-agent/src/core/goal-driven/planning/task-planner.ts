@@ -173,9 +173,11 @@ export class TaskPlanner {
     };
 
     try {
-      taskData = JSON.parse(response.content);
+      // Try to parse JSON, handling markdown code blocks
+      taskData = this.parseJSONWithMarkdown(response.content);
     } catch (error) {
       console.error('[TaskPlanner] Failed to parse task generation response:', error);
+      console.error('[TaskPlanner] Raw response:', response.content.slice(0, 500));
       // Fallback: create default tasks
       return this.createDefaultTasks(subGoal, goalContext);
     }
@@ -283,7 +285,7 @@ export class TaskPlanner {
       description: def.description,
       type: taskType,
       priority: this.validatePriority(def.priority),
-      status: 'pending',
+      status: 'awaiting_confirmation',
       hierarchyLevel,
       execution: {
         agentPrompt: `${def.title}: ${def.description}`,
@@ -494,6 +496,33 @@ export class TaskPlanner {
       return priority as PriorityLevel;
     }
     return 'medium';
+  }
+
+  /**
+   * Parse JSON response, handling markdown code blocks
+   */
+  private parseJSONWithMarkdown<T>(content: string): T {
+    let jsonStr = content.trim();
+
+    // Try to extract JSON from markdown code block
+    const jsonBlockMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+    if (jsonBlockMatch) {
+      jsonStr = jsonBlockMatch[1].trim();
+    } else {
+      // Try generic code block
+      const codeBlockMatch = content.match(/```\s*([\s\S]*?)\s*```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1].trim();
+      } else {
+        // Try to find JSON object/array in plain text
+        const jsonObjectMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonObjectMatch) {
+          jsonStr = jsonObjectMatch[0];
+        }
+      }
+    }
+
+    return JSON.parse(jsonStr) as T;
   }
 }
 

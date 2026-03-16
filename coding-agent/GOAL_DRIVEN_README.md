@@ -45,6 +45,60 @@ npm run dev
   - 更好的错误处理和调试日志
 - **文件**: `coding-agent/src/core/goal-driven/runtime/coding-agent-adapter.ts`
 
+### Bug 4: ✅ 已修复（重大变更）
+- **问题**: 用户回复后没有进入 goal-driven 后续流程，而是进入了 pi-agent 的通用对话流程
+- **原因**: extension.ts 没有订阅用户输入事件，无法拦截交互式任务的回复
+- **修复**: 在 `initialize()` 中添加 `pi.on("input", handler)` 订阅用户输入事件
+- **处理的场景**:
+  - **Phase 1 (collecting_info)**: 信息收集阶段，调用 `orchestrator.handleInfoCollectionResponse()`
+  - **waiting_user 任务**: 执行阶段的交互式任务，调用 `scheduler.handleUserResponse()`
+  - **presenting_plan 阶段**: 计划确认阶段，处理用户的确认/修改意见
+- **关键代码**:
+  ```typescript
+  unsubscribeInputHandler = pi.on("input", async (event) => {
+    // CASE 1: 信息收集阶段
+    // CASE 2: 等待用户输入的任务
+    // CASE 3: 计划确认阶段
+    // CASE 4: 无匹配，返回 { action: "continue" }
+  });
+  ```
+- **文件**: `coding-agent/src/core/goal-driven/extension.ts`
+
+### Bug 5: ✅ 已修复
+- **问题**: LLM 返回的 JSON 因 `max_tokens` 限制被截断，导致 `JSON.parse` 失败
+- **错误信息**: `Expected ':' after property name in JSON at position 944`
+- **修复**: 在 `CodingAgentLLMChannel` 中添加截断检测和自动修复机制
+- **关键变更**:
+  - 检查 `finish_reason === 'length'` 判断是否被截断
+  - 添加 `isLikelyTruncated()` 方法检测不完整的 JSON
+  - 添加 `attemptToFixTruncatedJSON()` 方法自动修复截断的 JSON
+  - 修复策略：补全缺失的引号、关闭未闭合的括号、移除尾部逗号
+- **文件**: `coding-agent/src/core/goal-driven/runtime/coding-agent-adapter.ts`
+
+### 功能: 信息收集约束条件
+- **约束1**: 信息收集最多 **3 轮**
+- **约束2**: 每轮最多 **3 个问题**
+- **实现**:
+  - 在 `Task` 类型添加 `gatheringRound?: number` 字段跟踪当前轮次
+  - 在 `ContextGatherer.startInteractiveGathering()` 初始化 `gatheringRound: 1`
+  - 在 `processUserResponse()` 中检查轮数，达到3轮自动完成
+  - 修改 `generateQuestions()` 从 `slice(0, 2)` 改为 `slice(0, 3)`
+  - 更新 systemPrompt 提示 LLM 最多生成3个问题
+- **文件**:
+  - `coding-agent/src/core/goal-driven/types/index.ts`
+  - `coding-agent/src/core/goal-driven/planning/context-gatherer.ts`
+
+### Bug 6: ✅ 已修复
+- **问题**: TaskPlanner 和 ValueAssessor 出现错误
+  1. `Unexpected token '`'` - LLM 返回 markdown 格式的 JSON，解析失败
+  2. `this.goalStore.getGoal is not a function` - ValueAssessor 初始化参数顺序错误
+- **修复**:
+  1. 在 TaskPlanner 中添加 `parseJSONWithMarkdown()` 辅助函数，支持提取 markdown code block 中的 JSON
+  2. 修复 extension.ts 中 ValueAssessor 的初始化参数顺序：应为 `(taskStore, goalStore, knowledgeStore, llm)`
+- **文件**:
+  - `coding-agent/src/core/goal-driven/planning/task-planner.ts`
+  - `coding-agent/src/core/goal-driven/extension.ts`
+
 ### 功能: 结构化日志系统
 - **日志文件**: 按天保存到 `~/.pi/agent/logs/goal-driven-YYYY-MM-DD.log`
 - **日志级别**: debug, info, warn, error

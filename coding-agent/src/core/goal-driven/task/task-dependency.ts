@@ -187,8 +187,9 @@ export class TaskDependencyGraph {
       throw new Error(`Task not found: ${taskId}`);
     }
 
-    // If already completed, failed, or cancelled, don't change
-    if (['completed', 'failed', 'cancelled', 'in_progress', 'waiting_user'].includes(task.status)) {
+    // If already completed, failed, cancelled, in progress, waiting_user, or awaiting_confirmation, don't change
+    // awaiting_confirmation tasks should only be activated after plan confirmation
+    if (['completed', 'failed', 'cancelled', 'in_progress', 'waiting_user', 'awaiting_confirmation'].includes(task.status)) {
       return task.status;
     }
 

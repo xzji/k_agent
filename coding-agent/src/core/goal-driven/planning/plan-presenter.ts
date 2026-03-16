@@ -46,6 +46,10 @@ export interface PlanReport {
       priority: string;
       hierarchyLevel: string;
       expectedResult: string;
+      schedule?: { type: string; intervalMs: number };
+      nextExecutionAt?: number;
+      dependencies: string[];
+      dependencyTitles: string[]; // 依赖任务的标题
       shouldNotify?: boolean;
       notifyReason?: string;
       notifyTiming?: string;
@@ -104,6 +108,17 @@ export class PlanPresenter {
     let notifyTasks = 0;
     let interactiveTasks = 0;
 
+    // 先收集所有任务的标题映射（用于显示依赖关系）
+    const taskTitleMap = new Map<string, string>();
+    for (const sg of subGoals) {
+      for (const taskId of sg.taskIds) {
+        const task = await this.taskStore.getTask(taskId);
+        if (task) {
+          taskTitleMap.set(task.id, task.title);
+        }
+      }
+    }
+
     for (const sg of subGoals) {
       const tasks: Task[] = [];
       for (const taskId of sg.taskIds) {
@@ -129,8 +144,12 @@ export class PlanPresenter {
           title: t.title,
           type: t.type,
           priority: t.priority,
-          hierarchyLevel: t.hierarchyLevel ?? 'standard',
+          hierarchyLevel: t.hierarchyLevel ?? 'task',
           expectedResult: t.expectedResult?.description ?? '',
+          schedule: t.schedule,
+          nextExecutionAt: t.nextExecutionAt,
+          dependencies: t.dependencies,
+          dependencyTitles: t.dependencies.map((depId) => taskTitleMap.get(depId) || depId.slice(0, 8)),
           shouldNotify: t.shouldNotify,
           notifyReason: t.notifyReason,
           notifyTiming: t.notifyTiming,
@@ -204,6 +223,97 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
   }
 
   /**
+   * Format task type for display
+   */
+  private formatTaskType(type: string): string {
+    const typeLabels: Record<string, string> = {
+      exploration: '探索',
+      one_time: '单次',
+      recurring: '周期',
+      interactive: '交互',
+      monitoring: '监控',
+      event_triggered: '触发',
+    };
+    return typeLabels[type] || type;
+  }
+
+  /**
+   * Format task schedule/trigger time for display
+   */
+  private formatTaskSchedule(task: PlanReport['subGoals'][0]['tasks'][0]): string {
+    // 根据任务类型显示触发时机
+    switch (task.type) {
+      case 'interactive':
+        return '立即执行，需用户输入';
+
+      case 'recurring':
+        if (task.schedule) {
+          const interval = this.formatInterval(task.schedule.intervalMs);
+          return `每${interval}`;
+        }
+        return '周期执行';
+
+      case 'monitoring':
+        if (task.schedule) {
+          const interval = this.formatInterval(task.schedule.intervalMs);
+          return `每${interval}检查`;
+        }
+        return '持续监控';
+
+      case 'event_triggered':
+        return '事件触发';
+
+      case 'exploration':
+        // 有依赖的探索任务
+        if (task.dependencies.length > 0) {
+          return this.formatDependencies(task.dependencyTitles);
+        }
+        return task.notifyTiming || '立即执行';
+
+      case 'one_time':
+      default:
+        // 有依赖的一次性任务
+        if (task.dependencies.length > 0) {
+          return this.formatDependencies(task.dependencyTitles);
+        }
+        return task.nextExecutionAt
+          ? `计划 ${new Date(task.nextExecutionAt).toLocaleDateString('zh-CN')}`
+          : (task.notifyTiming || '立即执行');
+    }
+  }
+
+  /**
+   * Format dependency titles for display
+   */
+  private formatDependencies(titles: string[]): string {
+    if (titles.length === 0) return '';
+    if (titles.length === 1) {
+      return `「${titles[0].slice(0, 20)}」完成后`;
+    }
+    // 多个依赖，显示前两个
+    const firstTwo = titles.slice(0, 2).map((t) => `「${t.slice(0, 15)}」`);
+    const more = titles.length > 2 ? `等${titles.length}个任务` : '';
+    return `${firstTwo.join('、')}${more}完成后`;
+  }
+
+  /**
+   * Format interval milliseconds to human readable string
+   */
+  private formatInterval(ms: number): string {
+    const minutes = Math.round(ms / 60000);
+    if (minutes < 60) return `${minutes}分钟`;
+
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}小时`;
+
+    const days = Math.round(hours / 24);
+    if (days < 30) return `${days}天`;
+
+    const months = Math.round(days / 30);
+    return `${months}月`;
+  }
+
+  /**
    * Format timeline
    */
   private formatTimeline(totalHours: number): string {
@@ -249,10 +359,10 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
     // Enqueue notification
     this.notificationQueue.enqueue(notification);
 
-    // In real implementation, this would wait for user response
-    // For now, return a placeholder result
+    // Return false - waiting for user confirmation via input handler
+    // The extension.ts input handler will handle the confirmation response
     return {
-      confirmed: true,
+      confirmed: false,
     };
   }
 
@@ -284,7 +394,10 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
       if (sg.tasks.length > 0) {
         lines.push('\n任务列表:');
         for (const task of sg.tasks) {
-          lines.push(`  - [${task.hierarchyLevel}] ${task.title} (${task.priority})`);
+          const typeLabel = this.formatTaskType(task.type);
+          const scheduleLabel = this.formatTaskSchedule(task);
+          const scheduleStr = scheduleLabel ? ` | ${scheduleLabel}` : '';
+          lines.push(`  - [${typeLabel}] ${task.title} (${task.priority})${scheduleStr}`);
           lines.push(`    预期产出: ${task.expectedResult}`);
         }
       }

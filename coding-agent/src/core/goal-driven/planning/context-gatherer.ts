@@ -17,6 +17,7 @@ import {
   type INotificationQueue,
 } from '../types';
 import { generateId, now, extractKeywords } from '../utils';
+import type { GoalDrivenConfigStore } from '../config/store.js';
 
 /**
  * LLM Channel interface for generating questions
@@ -36,15 +37,18 @@ export class ContextGatherer {
   private taskStore: ITaskStore;
   private notificationQueue: INotificationQueue;
   private llm: LLMChannel;
+  private configStore: GoalDrivenConfigStore;
 
   constructor(
     taskStore: ITaskStore,
     notificationQueue: INotificationQueue,
-    llm: LLMChannel
+    llm: LLMChannel,
+    configStore: GoalDrivenConfigStore
   ) {
     this.taskStore = taskStore;
     this.notificationQueue = notificationQueue;
     this.llm = llm;
+    this.configStore = configStore;
   }
 
   /**
@@ -67,8 +71,8 @@ export class ContextGatherer {
       return activeInteractiveTask;
     }
 
-    // Generate first batch of questions
-    const questions = await this.generateQuestions(goal, {}, context);
+    // Generate first batch of questions (round 1)
+    const questions = await this.generateQuestions(goal, {}, context, 1);
 
     // Create interactive task
     const task = await this.taskStore.createTask({
@@ -95,6 +99,7 @@ export class ContextGatherer {
       pendingQuestions: questions,
       collectedInfo: {},
       executionHistory: [],
+      gatheringRound: 1,  // Start at round 1 of 3
     });
 
     // Send notification to user
@@ -109,9 +114,10 @@ export class ContextGatherer {
   async generateQuestions(
     goal: Goal,
     collectedInfo: Record<string, unknown>,
-    context?: string
+    context?: string,
+    currentRound: number = 1
   ): Promise<QuestionBatch> {
-    const prompt = this.buildQuestionPrompt(goal, collectedInfo, context);
+    const prompt = this.buildQuestionPrompt(goal, collectedInfo, context, currentRound);
 
     try {
       const result = await this.llm.chatJSON<{
@@ -131,7 +137,13 @@ export class ContextGatherer {
       }>({
         systemPrompt: `You are an intelligent assistant helping to gather information for a user's goal.
 
-Your task is to generate 1-2 natural, conversational questions to collect missing information.
+Your task is to generate 1-3 natural, conversational questions to collect missing information.
+
+CRITICAL CONSTRAINTS:
+1. Generate AT MOST 3 questions per round
+2. Information gathering will stop after ${this.configStore.get('maxInfoCollectionRounds')} rounds maximum
+3. Prioritize the most important unanswered questions
+4. If you have enough information after user responses, set hasEnoughInfo to true immediately
 
 Guidelines:
 1. Ask questions like a helpful colleague, not like a form or survey
@@ -164,7 +176,7 @@ Always respond in valid JSON format.`,
         };
       }
 
-      const questions: Question[] = rawQuestions.slice(0, 2).map((q) => ({
+      const questions: Question[] = rawQuestions.slice(0, 3).map((q) => ({
         id: q.id || `q-${generateId().slice(0, 8)}`,
         question: q.question,
         purpose: q.purpose,
@@ -204,15 +216,23 @@ Always respond in valid JSON format.`,
   private buildQuestionPrompt(
     goal: Goal,
     collectedInfo: Record<string, unknown>,
-    context?: string
+    context?: string,
+    currentRound: number = 1
   ): string {
     const hasCollectedInfo = Object.keys(collectedInfo).length > 0;
+    const maxRounds = this.configStore.get('maxInfoCollectionRounds');
 
     return `## Goal
 Title: ${goal.title}
 Description: ${goal.description || 'No description provided'}
 
 ${context ? `## Additional Context\n${context}\n` : ''}
+
+## Collection Progress
+Round: ${currentRound} of ${maxRounds}
+${hasCollectedInfo
+  ? `Already collected ${Object.keys(collectedInfo).length} pieces of information`
+  : 'No information collected yet - this is the first round'}
 
 ## Already Collected Information
 ${hasCollectedInfo
@@ -229,6 +249,14 @@ ${goal.userContext.requiredInfo
 ## Task
 Generate 1-2 natural follow-up questions to gather the most important missing information.
 
+CRITICAL INSTRUCTIONS:
+- This is round ${currentRound} of ${maxRounds} maximum rounds
+- ${currentRound === 1 ? 'First round: ask foundational questions about the core goal' : ''}
+- ${currentRound === 2 ? 'Second round: ask follow-up questions to get specific details based on first round answers' : ''}
+- ${currentRound >= 3 ? 'Final round: ask any remaining critical questions before proceeding' : ''}
+- Only set hasEnoughInfo to true if we have thoroughly covered all important areas
+- Be thorough - better to ask one more question than to proceed with insufficient information
+
 Consider:
 1. What's already known vs. what would be most valuable to know next?
 2. What would help create a better plan for this goal?
@@ -244,7 +272,7 @@ Respond with JSON in this format:
       "choices": ["option1", "option2"] // Only for choice type
     }
   ],
-  "hasEnoughInfo": false, // Set true if we have sufficient information
+  "hasEnoughInfo": false, // Set true ONLY if we have sufficient detailed information
   "reasoning": "Why these questions (or why we have enough info)"
 }`;
   }
@@ -299,6 +327,13 @@ Respond with JSON in this format:
     const updatedTask = await this.taskStore.getTask(taskId);
     const allCollectedInfo = updatedTask?.collectedInfo || {};
 
+    // Track gathering round
+    const currentRound = updatedTask?.gatheringRound || 1;
+    const maxRounds = this.configStore.get('maxInfoCollectionRounds');
+    const minRounds = this.configStore.get('minInfoCollectionRounds');
+
+    console.log(`[ContextGatherer] Current round: ${currentRound}/${maxRounds}`);
+
     // Get goal for context
     // Note: GoalStore is not directly available, would need to be injected
     // For now, we'll create a minimal goal context from the task
@@ -316,15 +351,27 @@ Respond with JSON in this format:
       allCollectedInfo
     );
 
-    if (sufficiencyCheck.hasEnoughInfo) {
+    console.log(`[ContextGatherer] Sufficiency check: hasEnoughInfo=${sufficiencyCheck.hasEnoughInfo}, round=${currentRound}/${maxRounds}`);
+
+    // Complete if: (1) has enough info AND at least minRounds OR (2) reached max rounds
+    const canComplete = (sufficiencyCheck.hasEnoughInfo && currentRound >= minRounds) || currentRound >= maxRounds;
+
+    if (canComplete) {
+      const completionReason = sufficiencyCheck.hasEnoughInfo
+        ? 'Sufficient information collected'
+        : `Maximum rounds (${maxRounds}) reached, proceeding with available information`;
+
+      console.log(`[ContextGatherer] Completing: ${completionReason}`);
+
       // Information gathering complete
       await this.taskStore.updateStatus(taskId, 'completed', {
-        completionReason: 'Sufficient information collected',
+        completionReason,
       });
 
       return {
         extractedInfo,
         hasEnoughInfo: true,
+        context: completionReason,
       };
     }
 
@@ -334,10 +381,11 @@ Respond with JSON in this format:
       allCollectedInfo
     );
 
-    // Update task with new questions
+    // Update task with new questions and increment round
     await this.taskStore.updateTask(taskId, {
       pendingQuestions: nextQuestions,
       status: 'waiting_user',
+      gatheringRound: currentRound + 1,
     });
 
     // Notify user
@@ -449,11 +497,17 @@ ${Object.entries(collectedInfo)
 
 ## Task
 Assess whether we have enough information to create a good plan for this goal.
-Consider:
-1. Do we understand the core objective?
-2. Do we know the timeline/constraints?
-3. Do we understand what resources are available?
-4. Do we know the user's preferences or constraints?
+
+CRITICAL REQUIREMENTS:
+- We need at MINIMUM 2-3 rounds of information gathering before proceeding
+- Must have specific details, not just general statements
+- Must understand: specific objective, concrete timeline, available resources, constraints
+
+Be CONSERVATIVE - only mark as hasEnoughInfo if:
+1. We have SPECIFIC details (not vague statements)
+2. We know concrete numbers/dates/quantities where relevant
+3. We understand the user's specific context and preferences
+4. Information collection has been thorough (multiple rounds)
 
 Respond with JSON:
 {
