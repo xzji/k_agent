@@ -20,7 +20,9 @@
       "Bash(npm run copy-assets:*)",
       "WebSearch",
       "Bash(npx nodemon:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run:*)"
     ]
   }
 }

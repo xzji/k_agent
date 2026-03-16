@@ -1,0 +1,30 @@
+{
+  "name": "goal-driven-agent",
+  "version": "0.2.0",
+  "description": "Goal-Driven Agent with Unified Task Scheduler Architecture",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "example": "ts-node src/core/goal-driven/example.ts",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "goal-driven",
+    "agent",
+    "scheduler",
+    "task-management"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0",
+    "ts-node": "^10.9.0"
+  },
+  "dependencies": {}
+}
