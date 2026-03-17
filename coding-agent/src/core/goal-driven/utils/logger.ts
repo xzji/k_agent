@@ -35,11 +35,14 @@ interface LogEntry {
   duration?: number;      // 操作耗时(ms)
 }
 
+export type LLMLogMode = 'minimal' | 'standard' | 'verbose';
+
 interface LoggerOptions {
   logDir: string;         // 日志目录
   maxDays?: number;       // 保留天数，默认7天
   consoleOutput?: boolean; // 是否同时输出到控制台，默认true
   minLevel?: LogLevel;    // 最低日志级别，默认debug
+  llmLogMode?: LLMLogMode; // LLM日志详细程度，默认minimal
 }
 
 export class GoalDrivenLogger {
@@ -47,6 +50,7 @@ export class GoalDrivenLogger {
   private maxDays: number;
   private consoleOutput: boolean;
   private minLevel: LogLevel;
+  private llmLogMode: LLMLogMode;
   private currentDate: string;
   private logFilePath: string;
   private writeQueue: string[] = [];
@@ -57,6 +61,7 @@ export class GoalDrivenLogger {
     this.maxDays = options.maxDays ?? 7;
     this.consoleOutput = options.consoleOutput ?? true;
     this.minLevel = options.minLevel ?? 'debug';
+    this.llmLogMode = options.llmLogMode ?? 'minimal';
     this.currentDate = this.getCurrentDate();
     this.logFilePath = join(this.logDir, `goal-driven-${this.currentDate}.log`);
   }
@@ -98,25 +103,118 @@ export class GoalDrivenLogger {
   }
 
   /**
-   * 记录 LLM 请求
+   * 更新 LLM 日志模式（用于运行时配置更新）
    */
-  async logLLMRequest(prompt: string, options?: Record<string, unknown>, goalId?: string, taskId?: string): Promise<void> {
-    await this.info('llm_request', 'LLM Request', {
-      prompt: prompt.slice(0, 2000), // 限制长度
-      promptLength: prompt.length,
-      ...options,
-    }, goalId, taskId);
+  setLLMLogMode(mode: LLMLogMode): void {
+    this.llmLogMode = mode;
   }
 
   /**
-   * 记录 LLM 响应
+   * 记录 LLM 请求 - 支持详细模式
    */
-  async logLLMResponse(response: string, duration: number, goalId?: string, taskId?: string): Promise<void> {
-    await this.info('llm_response', 'LLM Response', {
-      response: response.slice(0, 2000),
-      responseLength: response.length,
-      duration,
+  async logLLMRequest(
+    prompt: string,
+    options?: Record<string, unknown>,
+    goalId?: string,
+    taskId?: string
+  ): Promise<void> {
+    const mode = this.llmLogMode;
+
+    // 根据模式决定记录内容
+    let promptData: Record<string, unknown>;
+    if (mode === 'minimal') {
+      promptData = {
+        prompt: prompt.slice(0, 200),
+        promptLength: prompt.length,
+        truncated: prompt.length > 200,
+      };
+    } else if (mode === 'standard') {
+      promptData = {
+        prompt: prompt.slice(0, 1000),
+        promptLength: prompt.length,
+        truncated: prompt.length > 1000,
+      };
+    } else {
+      // verbose - 完整记录
+      promptData = {
+        prompt,
+        promptLength: prompt.length,
+      };
+    }
+
+    await this.info('llm_request', 'LLM Request', {
+      ...promptData,
+      ...options,
     }, goalId, taskId);
+
+    // verbose 模式下在控制台输出完整 prompt
+    if (mode === 'verbose' && this.consoleOutput) {
+      const model = options?.model ?? 'unknown';
+      const provider = options?.provider ?? 'unknown';
+      const promptLength = prompt.length;
+
+      console.log('\n' + '='.repeat(80));
+      console.log('📤 LLM REQUEST');
+      console.log(`🤖 Model: ${model} | Provider: ${provider} | Length: ${promptLength} chars`);
+      if (goalId) console.log(`🎯 Goal: ${goalId.slice(0, 8)}`);
+      if (taskId) console.log(`📋 Task: ${taskId.slice(0, 8)}`);
+      console.log('='.repeat(80));
+      console.log(prompt);
+      console.log('='.repeat(80) + '\n');
+    }
+  }
+
+  /**
+   * 记录 LLM 响应 - 支持详细模式
+   */
+  async logLLMResponse(
+    response: string,
+    duration: number,
+    goalId?: string,
+    taskId?: string
+  ): Promise<void> {
+    const mode = this.llmLogMode;
+
+    // 根据模式决定记录内容
+    let responseData: Record<string, unknown>;
+    if (mode === 'minimal') {
+      responseData = {
+        response: response.slice(0, 200),
+        responseLength: response.length,
+        truncated: response.length > 200,
+        duration,
+      };
+    } else if (mode === 'standard') {
+      responseData = {
+        response: response.slice(0, 1000),
+        responseLength: response.length,
+        truncated: response.length > 1000,
+        duration,
+      };
+    } else {
+      // verbose - 完整记录
+      responseData = {
+        response,
+        responseLength: response.length,
+        duration,
+      };
+    }
+
+    await this.info('llm_response', 'LLM Response', responseData, goalId, taskId);
+
+    // verbose 模式下在控制台输出完整 response
+    if (mode === 'verbose' && this.consoleOutput) {
+      const responseLength = response.length;
+
+      console.log('\n' + '='.repeat(80));
+      console.log('📥 LLM RESPONSE');
+      console.log(`⏱️  Duration: ${duration}ms | Length: ${responseLength} chars`);
+      if (goalId) console.log(`🎯 Goal: ${goalId.slice(0, 8)}`);
+      if (taskId) console.log(`📋 Task: ${taskId.slice(0, 8)}`);
+      console.log('='.repeat(80));
+      console.log(response);
+      console.log('='.repeat(80) + '\n');
+    }
   }
 
   /**

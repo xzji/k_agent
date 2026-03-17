@@ -122,6 +122,15 @@ export class SubGoalStore implements ISubGoalStore {
   }
 
   /**
+   * Get all sub-goals (for cleanup)
+   */
+  async getAllSubGoals(): Promise<SubGoal[]> {
+    const subGoals = Array.from(this.cache.values());
+
+    return deepClone(subGoals);
+  }
+
+  /**
    * Get sub-goals by status
    */
   async getSubGoalsByStatus(status: SubGoalStatus): Promise<SubGoal[]> {

@@ -40,6 +40,9 @@ export class PlanConfirmationHandler {
           "开始",
         ].some((k) => response.includes(k))
       ) {
+        // Confirm the plan first
+        await this.orchestrator.confirmPlan(goal.id);
+
         // Activate tasks before starting execution
         await this.orchestrator.activateTasksAfterConfirmation(goal.id);
 

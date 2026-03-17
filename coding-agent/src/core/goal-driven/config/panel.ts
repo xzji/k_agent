@@ -48,8 +48,14 @@ export class ConfigPanel {
 
     for (const [key, label] of Object.entries(CONFIG_LABELS)) {
       const value = config[key as keyof GoalDrivenConfig];
-      const range = CONFIG_RANGES[key as keyof GoalDrivenConfig];
-      options.push(`${label}: ${value} (${range.min}-${range.max})`);
+
+      // Special handling for llmLogMode (enum type, not numeric)
+      if (key === 'llmLogMode') {
+        options.push(`${label}: ${value}`);
+      } else {
+        const range = CONFIG_RANGES[key as keyof GoalDrivenConfig];
+        options.push(`${label}: ${value} (${range.min}-${range.max})`);
+      }
     }
 
     options.push("", "🔄 重置为默认值", "🔙 返回");
@@ -69,6 +75,12 @@ export class ConfigPanel {
     ctx: ExtensionCommandContext,
     key: keyof GoalDrivenConfig
   ): Promise<void> {
+    // Special handling for llmLogMode (enum type)
+    if (key === 'llmLogMode') {
+      await this.editLLMLogMode(ctx);
+      return;
+    }
+
     const label = CONFIG_LABELS[key];
     const description = CONFIG_DESCRIPTIONS[key];
     const range = CONFIG_RANGES[key];
@@ -100,6 +112,37 @@ export class ConfigPanel {
     try {
       await this.configStore.updateConfig({ [key]: newValue } as Partial<GoalDrivenConfig>);
       ctx.ui.notify(`✅ ${label} 已更新为 ${newValue}`, "info");
+    } catch (error) {
+      ctx.ui.notify(`❌ 更新失败: ${String(error)}`, "error");
+    }
+  }
+
+  private async editLLMLogMode(ctx: ExtensionCommandContext): Promise<void> {
+    const currentValue = this.configStore.get('llmLogMode');
+    const label = CONFIG_LABELS['llmLogMode'];
+    const description = CONFIG_DESCRIPTIONS['llmLogMode'];
+
+    // Show description
+    ctx.ui.notify(`${label}\n${description}`, "info");
+
+    const choice = await ctx.ui.select(
+      "选择 LLM 日志模式",
+      [
+        `minimal  - 仅记录基本信息 (当前: ${currentValue === 'minimal' ? '✓' : ''})`,
+        `standard - 记录摘要 (前1000字符) (当前: ${currentValue === 'standard' ? '✓' : ''})`,
+        `verbose  - 完整记录并在控制台输出 (当前: ${currentValue === 'verbose' ? '✓' : ''})`,
+        "🔙 取消"
+      ]
+    );
+
+    if (!choice || choice.includes('取消')) return;
+
+    const newMode = choice.includes('minimal') ? 'minimal' :
+                    choice.includes('standard') ? 'standard' : 'verbose';
+
+    try {
+      await this.configStore.updateConfig({ llmLogMode: newMode });
+      ctx.ui.notify(`✅ LLM日志模式已更新为 ${newMode}`, "info");
     } catch (error) {
       ctx.ui.notify(`❌ 更新失败: ${String(error)}`, "error");
     }

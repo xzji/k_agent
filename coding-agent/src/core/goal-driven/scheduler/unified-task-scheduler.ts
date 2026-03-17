@@ -87,6 +87,7 @@ export class UnifiedTaskScheduler {
 
   // Background execution (optional)
   private backgroundExecutor?: AgentPiBackgroundExecutor;
+  private backgroundExecutorUnavailableReason?: string;
   private eventBus?: EventBus;
   private useBackgroundExecution = false;
   private dispatchedTasks = new Map<string, { goalId: string; startTime: number }>();
@@ -123,7 +124,8 @@ export class UnifiedTaskScheduler {
     config?: Partial<SchedulerConfig>,
     backgroundExecutor?: AgentPiBackgroundExecutor,
     eventBus?: EventBus,
-    configStore?: GoalDrivenConfigStore
+    configStore?: GoalDrivenConfigStore,
+    backgroundExecutorUnavailableReason?: string
   ) {
     this.taskStore = taskStore;
     this.goalStore = goalStore;
@@ -136,6 +138,7 @@ export class UnifiedTaskScheduler {
     this.userProfile = userProfile;
     this.valueAssessor = valueAssessor;
     this.backgroundExecutor = backgroundExecutor;
+    this.backgroundExecutorUnavailableReason = backgroundExecutorUnavailableReason;
     this.eventBus = eventBus;
     this.configStore = configStore;
 
@@ -277,8 +280,14 @@ export class UnifiedTaskScheduler {
       // 5. Sort by priority
       const prioritized = this.prioritizeTasks(executableTasks);
 
-      // 6. Execute tasks (with concurrency control if enabled)
-      const tasksToExecute = prioritized.slice(0, this.config.maxConcurrent * 2);
+      // 6. Calculate available slots considering both local running tasks and dispatched background tasks
+      const effectiveRunningCount = this.runningTasks.size + this.dispatchedTasks.size;
+      const availableSlots = Math.max(0, this.config.maxConcurrent - effectiveRunningCount);
+
+      console.log(`[Scheduler] Concurrency: running=${this.runningTasks.size}, dispatched=${this.dispatchedTasks.size}, max=${this.config.maxConcurrent}, available=${availableSlots}`);
+
+      // 7. Execute tasks (with concurrency control if enabled)
+      const tasksToExecute = prioritized.slice(0, availableSlots);
 
       if (this.config.enableConcurrency) {
         await this.executeWithConcurrency(tasksToExecute);
@@ -568,10 +577,20 @@ export class UnifiedTaskScheduler {
         task = await this.createExplorationTask(unifiedTask);
       }
 
+      // Check if this task should use background execution
+      const useBackgroundExecution = this.shouldUseBackgroundExecution(task);
+
       // Execute based on task type
       const result = await this.executeByType(task, unifiedTask.type);
 
-      // Update task status based on result
+      // For background execution, skip immediate status update - it will be handled by handleTaskResult
+      if (useBackgroundExecution) {
+        console.log(`[Scheduler] Task ${task.id} dispatched to background executor, skipping immediate completion`);
+        // Stats are not updated here - they will be updated when background execution completes
+        return;
+      }
+
+      // Update task status based on result (for non-background execution)
       const newStatus: TaskStatus = result.success ? 'completed' : 'failed';
       await this.taskStore.updateStatus(task.id, newStatus, {
         result,
@@ -640,21 +659,26 @@ export class UnifiedTaskScheduler {
 
   /**
    * Check if task should use background execution
+   *
+   * All non-interactive tasks use Agent Pi for execution. The background executor
+   * handles queuing internally when at capacity.
+   *
+   * @throws Error if background executor is not available for non-interactive tasks
    */
   private shouldUseBackgroundExecution(task: Task): boolean {
-    if (!this.useBackgroundExecution) return false;
-
-    // Only non-interactive tasks can use background execution
+    // Interactive tasks always use direct execution (need user input)
     if (task.type === 'interactive') return false;
 
-    // Check if task requires tools that need background execution
-    const tools = task.execution.requiredTools;
-    if (tools.length > 0) return true;
+    // Non-interactive tasks require background executor
+    if (!this.useBackgroundExecution || !this.backgroundExecutor) {
+      const reason = this.backgroundExecutorUnavailableReason ?? 'Unknown reason';
+      throw new Error(
+        `Background executor not available for task ${task.id}. Reason: ${reason}`
+      );
+    }
 
-    // Check task priority - high priority tasks use background for faster execution
-    if (task.priority === 'high' || task.priority === 'critical') return true;
-
-    return false;
+    // All non-interactive tasks use background execution (executor handles queuing internally)
+    return true;
   }
 
   /**
@@ -665,7 +689,7 @@ export class UnifiedTaskScheduler {
       throw new Error('EventBus not available for background execution');
     }
 
-    console.log(`[Scheduler] Dispatching task ${task.id} to background executor`);
+    console.log(`[Scheduler] Dispatching task ${task.id} (type: ${task.type}) to background executor`);
 
     // Mark task as dispatched
     this.dispatchedTasks.set(task.id, { goalId: task.goalId, startTime: now() });
@@ -677,12 +701,18 @@ export class UnifiedTaskScheduler {
       { maxResults: 5 }
     );
 
+    // Get actual tools from ToolProvider for display
+    const toolProvider = getToolProvider();
+    const actualTools = toolProvider ? await toolProvider.getToolNames() : task.execution.requiredTools;
+
     // Dispatch to background executor via EventBus
+    console.log(`[Scheduler] 🚀 Emitting execute_task for task ${task.id}, goal ${task.goalId}, type: ${task.type}`);
     this.eventBus.emit('goal_driven:execute_task', {
       taskId: task.id,
       goalId: task.goalId,
+      taskType: task.type,
       agentPrompt: task.execution.agentPrompt,
-      requiredTools: task.execution.requiredTools,
+      requiredTools: actualTools,
       contextKnowledge: knowledgeEntries,
       timeoutMs: task.execution.estimatedDuration ? task.execution.estimatedDuration * 1000 : undefined,
     });
@@ -691,7 +721,7 @@ export class UnifiedTaskScheduler {
     return {
       success: true,
       output: `🚀 任务已派发到后台执行器\n\n` +
-        `任务 "${task.title}" 正在后台通过 Agent Pi 执行，使用工具: ${task.execution.requiredTools.join(', ') || '无'}\n\n` +
+        `任务 "${task.title}" 正在后台通过 Agent Pi 执行，使用工具: ${actualTools.join(', ') || '无'}\n\n` +
         `执行完成后将通过通知推送结果。`,
       duration: 0,
     };
@@ -704,6 +734,9 @@ export class UnifiedTaskScheduler {
     const { taskId, goalId, success, output, error, duration, knowledgeEntries } = payload;
 
     console.log(`[Scheduler] Received result for task ${taskId}: ${success ? 'success' : 'failed'}`);
+    if (output) {
+      console.log(`[Scheduler] Task output:\n${output.slice(0, 500)}${output.length > 500 ? '...' : ''}`);
+    }
 
     // Remove from dispatched tasks
     this.dispatchedTasks.delete(taskId);
@@ -1093,7 +1126,7 @@ Please ensure this execution provides fresh insights and varies from previous ru
     const taskTypeLabel = typeLabels[task.type] || task.type;
 
     // Task context header
-    lines.push(`## 📋 ${task.title}`);
+    lines.push(`## ✅ ${task.title} - 执行完成`);
     lines.push('');
 
     // Sub-goal info
@@ -1105,37 +1138,37 @@ Please ensure this execution provides fresh insights and varies from previous ru
     lines.push(`**任务类型**: ${taskTypeLabel} | **优先级**: ${task.priority}`);
     lines.push('');
 
-    // Task description
-    if (task.description) {
-      lines.push(`**任务说明**: ${task.description}`);
-      lines.push('');
-    }
-
-    // Expected result
-    if (task.expectedResult?.description) {
-      lines.push(`**预期产出**: ${task.expectedResult.description}`);
-      lines.push('');
-    }
-
-    // Result output - focus on the actual collected information
-    lines.push('---');
+    // Result output - format based on length and type
+    lines.push('## 📤 执行结果');
     lines.push('');
 
-    if (task.type === 'exploration') {
-      // For exploration tasks, emphasize the collected information
-      lines.push('## 📊 收集到的信息');
-      lines.push('');
-    } else {
-      lines.push('## 📤 执行结果');
-      lines.push('');
-    }
+    const output = result.output || '';
+    const outputLength = output.length;
 
-    // Output content (truncated if too long)
-    const output = result.output?.slice(0, 2000) || '无输出';
-    lines.push(output);
-    if ((result.output?.length || 0) > 2000) {
-      lines.push('');
-      lines.push('... (内容已截断，更多信息请查看完整报告)');
+    if (outputLength === 0) {
+      lines.push('任务已完成，无文本输出。');
+    } else if (outputLength <= 500) {
+      // Short result: display directly
+      lines.push(this.formatOutput(output));
+    } else {
+      // Long result: show summary first, then truncated content
+      // Try to extract a summary from the first meaningful content
+      const summary = this.extractSummary(output);
+      if (summary) {
+        lines.push(`**摘要**: ${summary}`);
+        lines.push('');
+      }
+
+      // Show truncated content
+      const truncatedOutput = output.slice(0, 1500);
+      lines.push('**详细内容**:');
+      lines.push('```');
+      lines.push(truncatedOutput);
+      if (outputLength > 1500) {
+        lines.push('');
+        lines.push(`... (已截断，完整内容共 ${outputLength} 字符)`);
+      }
+      lines.push('```');
     }
 
     // Value assessment (collapsed for cleaner look)
@@ -1155,6 +1188,70 @@ Please ensure this execution provides fresh insights and varies from previous ru
     lines.push(`</details>`);
 
     return lines.join('\n');
+  }
+
+  /**
+   * Format output for better readability
+   */
+  private formatOutput(output: string): string {
+    // Try to parse as JSON for better formatting
+    try {
+      const parsed = JSON.parse(output);
+      if (typeof parsed === 'object' && parsed !== null) {
+        // Check if it's an array with tool call structures
+        if (Array.isArray(parsed)) {
+          const textParts: string[] = [];
+          for (const item of parsed) {
+            if (item.type === 'text' && item.text) {
+              textParts.push(item.text);
+            } else if (item.type === 'toolCall') {
+              textParts.push(`[调用工具: ${item.name || 'unknown'}]`);
+            }
+          }
+          if (textParts.length > 0) {
+            return textParts.join('\n');
+          }
+        }
+        // Return formatted JSON for other objects
+        return JSON.stringify(parsed, null, 2);
+      }
+    } catch {
+      // Not JSON, return as-is
+    }
+    return output;
+  }
+
+  /**
+   * Extract a brief summary from output
+   */
+  private extractSummary(output: string): string {
+    // Try to extract text from JSON structure
+    try {
+      const parsed = JSON.parse(output);
+      if (Array.isArray(parsed)) {
+        const textParts: string[] = [];
+        for (const item of parsed) {
+          if (item.type === 'text' && item.text) {
+            textParts.push(item.text);
+          }
+        }
+        if (textParts.length > 0) {
+          const combined = textParts.join(' ');
+          return combined.length > 200 ? combined.slice(0, 200) + '...' : combined;
+        }
+      }
+    } catch {
+      // Not JSON
+    }
+
+    // Extract first meaningful paragraph
+    const firstParagraph = output.split('\n\n')[0];
+    if (firstParagraph && firstParagraph.length <= 200) {
+      return firstParagraph;
+    }
+
+    // Truncate first 200 chars
+    return output.slice(0, 200) + '...';
   }
 
   /**

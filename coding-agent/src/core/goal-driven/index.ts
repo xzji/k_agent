@@ -98,6 +98,13 @@ export {
   getBackgroundSessionManager,
 } from './runtime/background-session';
 
+// Session logging
+export {
+  SessionLogWriter,
+  type SessionLog,
+  type RoundLogEntry,
+} from './runtime/session-log-writer';
+
 // Orchestrator
 export {
   GoalOrchestrator,

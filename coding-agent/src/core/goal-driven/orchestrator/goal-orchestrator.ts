@@ -381,6 +381,24 @@ export class GoalOrchestrator {
   }
 
   /**
+   * Confirm the plan after user approval
+   * This should be called when user confirms the plan (e.g., replies "ok", "确认", etc.)
+   */
+  async confirmPlan(goalId: string): Promise<void> {
+    const state = this.state.get(goalId);
+    if (!state) {
+      throw new Error('Goal not found in orchestrator state');
+    }
+
+    if (state.phase !== 'presenting_plan') {
+      throw new Error(`Cannot confirm plan in phase: ${state.phase}`);
+    }
+
+    state.planConfirmed = true;
+    console.log(`[GoalOrchestrator] Plan confirmed for goal ${goalId}`);
+  }
+
+  /**
    * Activate tasks after plan confirmation
    * Changes task status from 'awaiting_confirmation' to 'blocked' or 'ready' based on dependencies
    */

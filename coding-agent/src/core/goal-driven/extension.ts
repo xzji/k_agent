@@ -13,10 +13,14 @@
  * - /goal add <desc>        — Create new goal with interactive info gathering
  * - /goal list              — List all goals
  * - /goal status            — Show scheduler and orchestrator status
+ * - /goal tasks             — Show task queue overview
+ * - /goal tasks running     — Show running tasks only
+ * - /goal tasks <goalId>    — Show tasks for specific goal
+ * - /goal info <id>         — Show goal details (supports truncated ID)
  * - /goal stop              — Stop scheduler
  * - /goal resume            — Resume scheduler
- * - /goal complete <id>     — Mark goal as completed
- * - /goal abandon <id>      — Abandon a goal
+ * - /goal complete <id>     — Mark goal as completed (supports truncated ID)
+ * - /goal abandon <id>      — Abandon a goal (supports truncated ID)
  * - /goal clear --confirm   — Clear all data
  */
 
@@ -108,6 +112,10 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // ── Input handler unsubscribe ──
   let unsubscribeInputHandler: (() => void) | null = null;
 
+  // ── Background Executor ──
+  let backgroundExecutor: AgentPiBackgroundExecutor | null = null;
+  let backgroundExecutorUnavailableReason: string | null = null;
+
   // ── Initialization state ──
   let initialized = false;
 
@@ -115,29 +123,61 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   async function initialize(ctx?: import("../../extensions/types.js").ExtensionCommandContext): Promise<void> {
     if (initialized) return;
 
-    // Initialize logger
+    // Initialize config store first (needed for logger configuration)
+    if (!configStore) {
+      configStore = new GoalDrivenConfigStore(dataDir);
+      await configStore.init();
+    }
+
+    // Initialize logger with config
     if (!logger) {
       const logDir = join(getAgentDir(), "logs");
+      const config = configStore.getConfig();
       logger = new GoalDrivenLogger({
         logDir,
         maxDays: 7,
         consoleOutput: true,
         minLevel: 'debug',
+        llmLogMode: config.llmLogMode,
       });
       await logger.init();
       setGlobalLogger(logger);
-      await logSystemAction('Goal-Driven Agent initialization started', { dataDir });
+
+      // Listen for configuration changes to update logger
+      configStore.onChange((newConfig) => {
+        logger?.setLLMLogMode(newConfig.llmLogMode);
+        console.log(`[GoalDriven] LLM log mode changed to: ${newConfig.llmLogMode}`);
+      });
+
+      await logSystemAction('Goal-Driven Agent initialization started', { dataDir, llmLogMode: config.llmLogMode });
     }
 
     // Try to get model from context
     let currentModel: import("@mariozechner/pi-ai").Model<any> | undefined;
     let modelRegistry: import("../model-registry.js").ModelRegistry | undefined;
 
-    if (ctx && ctx.model) {
-      currentModel = ctx.model;
-      modelRegistry = ctx.modelRegistry;
-    } else {
-      // Try to get from settings
+    // Try multiple ways to get the current model
+    if (ctx) {
+      // Method 1: Direct access to ctx.model
+      if (ctx.model) {
+        currentModel = ctx.model;
+        modelRegistry = ctx.modelRegistry;
+        console.log(`[GoalDriven] Using ctx.model: ${currentModel.provider}/${currentModel.id}`);
+      }
+      // Method 2: Use ctx.getModel() if available
+      else if (typeof ctx.getModel === 'function') {
+        const modelFromGetter = ctx.getModel();
+        if (modelFromGetter) {
+          currentModel = modelFromGetter;
+          modelRegistry = ctx.modelRegistry;
+          console.log(`[GoalDriven] Using ctx.getModel(): ${currentModel.provider}/${currentModel.id}`);
+        }
+      }
+    }
+
+    // Fallback to settings if no model found in context
+    if (!currentModel) {
+      console.log(`[GoalDriven] No model in context, falling back to settings`);
       const { SettingsManager } = await import("../settings-manager.js");
       const { ModelRegistry } = await import("../model-registry.js");
       const { AuthStorage } = await import("../auth-storage.js");
@@ -151,6 +191,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       if (defaultProvider && defaultModelId) {
         currentModel = modelRegistry.find(defaultProvider, defaultModelId);
+        console.log(`[GoalDriven] Using model from settings: ${currentModel?.provider}/${currentModel?.id}`);
       }
     }
 
@@ -170,10 +211,6 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
     subGoalStore = new SubGoalStore(dataDir);
     await subGoalStore.init();
-
-    // Initialize config store
-    configStore = new GoalDrivenConfigStore(dataDir);
-    await configStore.init();
 
     notificationQueue = new NotificationQueue();
 
@@ -215,7 +252,6 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     );
 
     // Initialize Background Executor (optional - requires model registry)
-    let backgroundExecutor: AgentPiBackgroundExecutor | undefined;
     if (modelRegistry && currentModel) {
       const { AgentPiBackgroundExecutor } = await import('./runtime/agent-pi-executor.js');
       const { DefaultResourceLoader } = await import('../resource-loader.js');
@@ -244,10 +280,19 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         resourceLoader,
         getAgentDir(),
         {}, // Use defaults from config store
-        configStore!
+        configStore!,
+        currentModel // Pass current model to ensure consistency with main session
       );
       backgroundExecutor.initialize();
       console.log('[GoalDriven] Background executor initialized');
+    } else {
+      // Record why background executor is not available
+      if (!modelRegistry) {
+        backgroundExecutorUnavailableReason = 'Model registry not available';
+      } else if (!currentModel) {
+        backgroundExecutorUnavailableReason = 'No model selected. Please use /model to select a model first';
+      }
+      console.log(`[GoalDriven] Background executor not available: ${backgroundExecutorUnavailableReason}`);
     }
 
     // Initialize Scheduler
@@ -273,8 +318,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         enableConcurrency: true,
       },
       backgroundExecutor,  // Pass background executor
-      pi.events,          // Pass EventBus
-      configStore!        // Pass config store
+      pi.events,            // Pass EventBus
+      configStore!,         // Pass config store
+      backgroundExecutorUnavailableReason
     );
 
     // Initialize Orchestrator
@@ -532,6 +578,12 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return;
         }
 
+        case "tasks": {
+          const args = rest.trim();
+          await handleGoalTasks(ctx, taskStore!, goalStore!, backgroundExecutor, args);
+          return;
+        }
+
         case "stop": {
           if (!scheduler?.isRunning()) {
             ctx.ui.notify("调度器未在运行", "info");
@@ -570,43 +622,39 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         }
 
         case "complete": {
-          const goalId = rest.trim();
-          if (!goalId) {
+          const inputId = rest.trim();
+          if (!inputId) {
             ctx.ui.notify("用法: /goal complete <目标ID>", "warning");
             return;
           }
 
+          // Support truncated ID
+          const goalId = await resolveGoalId(goalStore!, inputId);
           const goal = await goalStore!.getGoal(goalId);
-          if (!goal) {
-            ctx.ui.notify(`未找到目标: ${goalId}`, "warning");
-            return;
-          }
 
           await goalStore!.updateGoal(goalId, {
             status: 'completed',
             completedAt: Date.now(),
           });
 
-          ctx.ui.notify(`✅ 目标已完成: ${goal.title}`, "success");
+          ctx.ui.notify(`✅ 目标已完成: ${goal!.title}`, "success");
           return;
         }
 
         case "abandon": {
-          const goalId = rest.trim();
-          if (!goalId) {
+          const inputId = rest.trim();
+          if (!inputId) {
             ctx.ui.notify("用法: /goal abandon <目标ID>", "warning");
             return;
           }
 
+          // Support truncated ID
+          const goalId = await resolveGoalId(goalStore!, inputId);
           const goal = await goalStore!.getGoal(goalId);
-          if (!goal) {
-            ctx.ui.notify(`未找到目标: ${goalId}`, "warning");
-            return;
-          }
 
           await goalStore!.updateGoal(goalId, { status: 'paused' });
 
-          ctx.ui.notify(`⏸️ 目标已暂停: ${goal.title}`, "info");
+          ctx.ui.notify(`⏸️ 目标已暂停: ${goal!.title}`, "info");
           return;
         }
 
@@ -626,30 +674,32 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           // Clear all data
           const goals = await goalStore!.getAllGoals();
 
+          // Clean up orchestrator state for each goal
           for (const goal of goals) {
+            await orchestrator?.cleanup(goal.id);
             await goalStore!.deleteGoal(goal.id);
           }
 
+          // Clear all stores
           await taskStore!.clearAll?.() || await clearTasksManual();
+          await subGoalStore!.clearAll?.() || await clearSubGoalsManual();
           await knowledgeStore!.clearAll?.() || await clearKnowledgeManual();
 
-          ctx.ui.notify(`🗑️ 已清空 ${goals.length} 个目标及所有相关数据。`, "info");
+          ctx.ui.notify(`🗑️ 已清空 ${goals.length} 个目标及所有相关数据（包括任务、子目标、知识库）。`, "info");
           return;
         }
 
         case "info": {
-          const goalId = rest.trim();
-          if (!goalId) {
+          const inputId = rest.trim();
+          if (!inputId) {
             ctx.ui.notify("用法: /goal info <目标ID>", "warning");
             return;
           }
 
-          const goal = await goalStore!.getGoal(goalId);
-          if (!goal) {
-            ctx.ui.notify(`未找到目标: ${goalId}`, "warning");
-            return;
-          }
+          // Support truncated ID
+          const goalId = await resolveGoalId(goalStore!, inputId);
 
+          const goal = await goalStore!.getGoal(goalId);
           const state = orchestrator?.getState(goalId);
           const tasks = await taskStore!.getTasksByGoal(goalId);
 
@@ -863,6 +913,14 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     }
   }
 
+  async function clearSubGoalsManual(): Promise<void> {
+    // Manual sub-goal clearing if store doesn't have clearAll
+    const allSubGoals = await subGoalStore?.getAllSubGoals?.() ?? [];
+    for (const subGoal of allSubGoals) {
+      await subGoalStore?.deleteSubGoal?.(subGoal.id);
+    }
+  }
+
   function formatPhase(phase: string): string {
     const phaseMap: Record<string, string> = {
       idle: "空闲",
@@ -900,10 +958,185 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       info: "ℹ️",
       urgent: "🔥",
       delivery: "📦",
-      suggestion: "💡",
-      progress: "⏳",
     };
-    return icons[type] ?? "🔔";
+    return icons[type] ?? "📌";
+  }
+
+  /**
+   * Resolve goal ID - supports truncated ID (8-char prefix) auto-matching
+   */
+  async function resolveGoalId(
+    goalStore: IGoalStore,
+    inputId: string
+  ): Promise<string> {
+    // Try exact match first
+    const goal = await goalStore.getGoal(inputId);
+    if (goal) return goal.id;
+
+    // Try prefix match
+    const matched = await goalStore.findGoalByPrefix(inputId);
+    if (matched) return matched.id;
+
+    throw new Error(`未找到目标: ${inputId}`);
+  }
+
+  /**
+   * Handle /goal tasks command - show task queue status
+   */
+  async function handleGoalTasks(
+    ctx: ExtensionCommandContext,
+    taskStore: ITaskStore,
+    goalStore: IGoalStore,
+    backgroundExecutor: AgentPiBackgroundExecutor | undefined,
+    args: string
+  ): Promise<void> {
+    const parts = args.split(/\s+/);
+
+    // /goal tasks running - show only running tasks
+    if (parts[0] === 'running') {
+      if (!backgroundExecutor) {
+        ctx.ui.notify("任务执行器未初始化", "warning");
+        return;
+      }
+
+      const runningTaskIds = backgroundExecutor.getRunningTasks();
+      if (runningTaskIds.length === 0) {
+        ctx.ui.notify("目前没有正在执行的任务", "info");
+        return;
+      }
+
+      let output = `🔄 正在运行的任务 (${runningTaskIds.length}):\n\n`;
+      const now = Date.now();
+
+      for (const taskId of runningTaskIds) {
+        const task = await taskStore.getTask(taskId);
+        if (!task) continue;
+
+        // Try to get elapsed time from executor
+        output += `🔄 ${task.id.slice(0, 8)} | ${task.title}\n`;
+        output += `   类型: ${task.type} | 状态: ${task.status}\n\n`;
+      }
+
+      ctx.ui.notify(output, "info");
+      return;
+    }
+
+    // /goal tasks <goalId> - show tasks for specific goal
+    if (parts[0]) {
+      try {
+        const goalId = await resolveGoalId(goalStore, parts[0]);
+        const tasks = await taskStore.getTasksByGoal(goalId);
+        const goal = await goalStore.getGoal(goalId);
+
+        if (!goal) {
+          ctx.ui.notify(`未找到目标: ${parts[0]}`, "warning");
+          return;
+        }
+
+        let output = `📋 目标任务: ${goal.title}\n`;
+        output += `目标ID: ${goal.id}\n`;
+        output += `任务数: ${tasks.length}\n\n`;
+
+        // Group by status
+        const statusGroups: Record<string, typeof tasks> = {};
+        for (const task of tasks) {
+          if (!statusGroups[task.status]) {
+            statusGroups[task.status] = [];
+          }
+          statusGroups[task.status].push(task);
+        }
+
+        // Show each group
+        for (const [status, taskList] of Object.entries(statusGroups)) {
+          const icon = getTaskStatusIcon(status as TaskStatus);
+          output += `${icon} ${status} (${taskList.length}):\n`;
+          for (const task of taskList) {
+            output += `   - ${task.title}\n`;
+          }
+          output += '\n';
+        }
+
+        ctx.ui.notify(output, "info");
+        return;
+      } catch (error) {
+        ctx.ui.notify(`❌ ${String(error)}`, "error");
+        return;
+      }
+    }
+
+    // /goal tasks - global overview
+    const allTasks = await taskStore.getAllTasks();
+
+    if (allTasks.length === 0) {
+      ctx.ui.notify("暂无任务", "info");
+      return;
+    }
+
+    // Count by status
+    const statusCounts: Record<string, number> = {};
+    for (const task of allTasks) {
+      statusCounts[task.status] = (statusCounts[task.status] || 0) + 1;
+    }
+
+    let output = `📋 任务队列概览\n\n`;
+    output += `总计: ${allTasks.length} 个任务\n\n`;
+    output += `按状态统计:\n`;
+
+    const statusOrder: TaskStatus[] = [
+      'in_progress',
+      'pending',
+      'ready',
+      'blocked',
+      'waiting_user',
+      'awaiting_confirmation',
+      'completed',
+      'failed',
+      'cancelled'
+    ];
+
+    for (const status of statusOrder) {
+      const count = statusCounts[status] || 0;
+      if (count > 0) {
+        const icon = getTaskStatusIcon(status);
+        output += `  ${icon} ${status}: ${count}\n`;
+      }
+    }
+
+    // Show running tasks
+    const runningTaskIds = backgroundExecutor.getRunningTasks();
+    if (runningTaskIds.length > 0) {
+      output += `\n🔄 正在运行 (${runningTaskIds.length}):\n`;
+      for (const taskId of runningTaskIds) {
+        const task = await taskStore.getTask(taskId);
+        if (task) {
+          output += `   🔄 ${task.title}\n`;
+        }
+      }
+    }
+
+    // Show queue status if available
+    try {
+      if (!backgroundExecutor) {
+        throw new Error("backgroundExecutor not available");
+      }
+      const queueStatus = backgroundExecutor.getDispatchQueueStatus();
+      if (queueStatus.queueLength > 0) {
+        output += `\n⏳ 排队等待 (${queueStatus.queueLength}):\n`;
+        for (const item of queueStatus.queue.slice(0, 5)) {
+          const task = await taskStore.getTask(item.taskId);
+          if (task) {
+            output += `   ⏳ ${task.title}\n`;
+          }
+        }
+        if (queueStatus.queueLength > 5) {
+          output += `   ... 还有 ${queueStatus.queueLength - 5} 个\n`;
+        }
+      }
+    } catch {
+      // Ignore if not available
+    }
+
+    ctx.ui.notify(output, "info");
   }
 };
 

@@ -99,6 +99,14 @@ export class GoalDrivenConfigStore {
       }
     }
 
+    // Validate llmLogMode
+    if (updates.llmLogMode !== undefined) {
+      const validModes = ['minimal', 'standard', 'verbose'];
+      if (!validModes.includes(updates.llmLogMode)) {
+        errors.push(`llmLogMode must be one of: ${validModes.join(', ')}`);
+      }
+    }
+
     return errors;
   }
 

@@ -11,6 +11,7 @@ export interface GoalDrivenConfig {
   schedulerCycleIntervalMs: number;
   taskDefaultTimeoutMs: number;
   taskHeartbeatTimeoutMs: number;
+  llmLogMode: 'minimal' | 'standard' | 'verbose';
 }
 
 export const DEFAULT_GOAL_DRIVEN_CONFIG: GoalDrivenConfig = {
@@ -20,6 +21,7 @@ export const DEFAULT_GOAL_DRIVEN_CONFIG: GoalDrivenConfig = {
   schedulerCycleIntervalMs: 60000,
   taskDefaultTimeoutMs: 600000,
   taskHeartbeatTimeoutMs: 120000,
+  llmLogMode: 'minimal',
 };
 
 export const CONFIG_RANGES: Record<keyof GoalDrivenConfig, { min: number; max: number }> = {
@@ -38,6 +40,7 @@ export const CONFIG_LABELS: Record<keyof GoalDrivenConfig, string> = {
   schedulerCycleIntervalMs: "调度周期（毫秒）",
   taskDefaultTimeoutMs: "任务默认超时（毫秒）",
   taskHeartbeatTimeoutMs: "心跳超时（毫秒）",
+  llmLogMode: "LLM日志模式",
 };
 
 export const CONFIG_DESCRIPTIONS: Record<keyof GoalDrivenConfig, string> = {
@@ -47,4 +50,5 @@ export const CONFIG_DESCRIPTIONS: Record<keyof GoalDrivenConfig, string> = {
   schedulerCycleIntervalMs: "调度器检查就绪任务的时间间隔",
   taskDefaultTimeoutMs: "单个任务在后台执行的最大时间",
   taskHeartbeatTimeoutMs: "任务无响应判定为超时的时间",
+  llmLogMode: "LLM请求/响应的日志详细程度: minimal=仅基本信息, standard=摘要(前1000字符), verbose=完整内容并在控制台输出",
 };

@@ -31,6 +31,7 @@ export class TaskStore implements ITaskStore {
   private baseDir: string;
   private cache: Map<string, Task> = new Map();
   private dirtyGoals: Set<string> = new Set();
+  private saveLocks: Map<string, Promise<void>> = new Map();
 
   constructor(baseDir: string = STORAGE_DIR) {
     this.baseDir = baseDir.replace('~', process.env.HOME || '');
@@ -89,23 +90,43 @@ export class TaskStore implements ITaskStore {
 
   /**
    * Save tasks for a goal to disk
+   * Uses a lock per goalId to prevent concurrent writes that could corrupt the JSON file
    */
   private async saveGoalTasks(goalId: string): Promise<void> {
-    const tasks = Array.from(this.cache.values())
-      .filter((t) => t.goalId === goalId)
-      .sort((a, b) => a.createdAt - b.createdAt);
+    // Wait for any existing save operation for this goal to complete
+    const existingLock = this.saveLocks.get(goalId);
+    if (existingLock) {
+      await existingLock;
+    }
 
-    const storage: TaskStorage = {
-      tasks,
-      version: 1,
-      lastUpdated: now(),
-    };
+    // Create a new lock for this save operation
+    let releaseLock: () => void;
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    this.saveLocks.set(goalId, lockPromise);
 
-    await this.ensureGoalDir(goalId);
-    const storagePath = this.getStoragePath(goalId);
-    await fs.writeFile(storagePath, JSON.stringify(storage, null, 2), 'utf-8');
+    try {
+      const tasks = Array.from(this.cache.values())
+        .filter((t) => t.goalId === goalId)
+        .sort((a, b) => a.createdAt - b.createdAt);
 
-    this.dirtyGoals.delete(goalId);
+      const storage: TaskStorage = {
+        tasks,
+        version: 1,
+        lastUpdated: now(),
+      };
+
+      await this.ensureGoalDir(goalId);
+      const storagePath = this.getStoragePath(goalId);
+      await fs.writeFile(storagePath, JSON.stringify(storage, null, 2), 'utf-8');
+
+      this.dirtyGoals.delete(goalId);
+    } finally {
+      // Release the lock
+      this.saveLocks.delete(goalId);
+      releaseLock!();
+    }
   }
 
   /**

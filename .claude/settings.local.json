@@ -25,7 +25,8 @@
       "Bash(npm run:*)",
       "Bash(cp:*)",
       "Bash(npx vitest:*)",
-      "Bash(npx ts-node:*)"
+      "Bash(npx ts-node:*)",
+      "Bash(grep:*)"
     ]
   }
 }

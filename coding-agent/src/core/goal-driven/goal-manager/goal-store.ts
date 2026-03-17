@@ -109,6 +109,34 @@ export class GoalStore implements IGoalStore {
   }
 
   /**
+   * Find a goal by ID prefix (supports 8-char truncated ID)
+   * @throws Error if multiple goals match the prefix
+   */
+  async findGoalByPrefix(prefix: string): Promise<Goal | null> {
+    const goals = await this.getAllGoals();
+
+    // Exact match first
+    const exact = goals.find((g) => g.id === prefix);
+    if (exact) return exact;
+
+    // Prefix match
+    const matches = goals.filter((g) => g.id.startsWith(prefix));
+
+    if (matches.length === 0) {
+      return null;
+    }
+
+    if (matches.length > 1) {
+      throw new Error(
+        `Multiple goals match "${prefix}". Please use full ID:\n` +
+          matches.map((g) => `  ${g.id} - ${g.title}`).join('\n')
+      );
+    }
+
+    return matches[0];
+  }
+
+  /**
    * Get all active goals
    */
   async getActiveGoals(): Promise<Goal[]> {

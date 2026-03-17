@@ -15,6 +15,7 @@
  * 4. 支持心跳监控和超时控制
  */
 
+import type { Model } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "../../extensions/types.js";
 import type {
   Task,
@@ -24,6 +25,7 @@ import type {
   IKnowledgeStore,
   INotificationQueue,
   IGoalStore,
+  TaskType,
 } from "../types.js";
 import { generateId, now } from "../utils/index.js";
 import { logError, logSystemAction } from "../utils/logger.js";
@@ -49,6 +51,7 @@ export interface ExecuteTaskEvent {
   payload: {
     taskId: string;
     goalId: string;
+    taskType: TaskType;
     agentPrompt: string;
     requiredTools: string[];
     contextKnowledge?: KnowledgeEntry[];
@@ -120,6 +123,7 @@ interface RunningTaskState {
 interface QueuedTask {
   taskId: string;
   goalId: string;
+  taskType: TaskType;
   agentPrompt: string;
   requiredTools: string[];
   contextKnowledge?: KnowledgeEntry[];
@@ -177,6 +181,7 @@ export class AgentPiBackgroundExecutor {
   // 任务派发队列
   private dispatchQueue: QueuedTask[] = [];
   private dispatchTimer?: ReturnType<typeof setTimeout>;
+  private dispatchQueueLock = false; // 防止并发处理队列
   private readonly DISPATCH_INTERVAL_MS = 5000; // 5秒检查一次队列
 
   constructor(
@@ -190,8 +195,10 @@ export class AgentPiBackgroundExecutor {
     resourceLoader: ResourceLoader,
     agentDir: string,
     config?: Partial<BackgroundExecutionConfig>,
-    configStore?: GoalDrivenConfigStore
+    configStore?: GoalDrivenConfigStore,
+    currentModel?: Model<any>
   ) {
+    console.log(`[AgentPiBackgroundExecutor] Constructor called with model: ${currentModel?.provider}/${currentModel?.id}`);
     this.taskStore = taskStore;
     this.knowledgeStore = knowledgeStore;
     this.notificationQueue = notificationQueue;
@@ -210,12 +217,13 @@ export class AgentPiBackgroundExecutor {
       ...config,
     };
 
-    // 初始化后台会话管理器
+    // 初始化后台会话管理器，传入当前模型以确保和主会话一致
     this.sessionManager = initBackgroundSessionManager(
       modelRegistry,
       settingsManager,
       resourceLoader,
-      agentDir
+      agentDir,
+      currentModel
     );
 
     // Listen for config changes
@@ -239,7 +247,10 @@ export class AgentPiBackgroundExecutor {
     }
 
     // 监听执行任务请求
-    this.pi.events.on("goal_driven:execute_task", this.handleExecuteTask.bind(this));
+    this.pi.events.on("goal_driven:execute_task", (payload: any) => {
+      console.log(`[AgentPiExecutor] 📥 Received execute_task event, taskId: ${payload?.taskId}, goalId: ${payload?.goalId}`);
+      this.handleExecuteTask(payload);
+    });
 
     // 监听后台会话事件
     this.eventUnsubscribe = this.sessionManager.onEvent(this.handleSessionEvent.bind(this));
@@ -267,24 +278,35 @@ export class AgentPiBackgroundExecutor {
    * 处理派发队列
    */
   private async processDispatchQueue(): Promise<void> {
-    if (this.dispatchQueue.length === 0) return;
-    if (this.runningTasks.size >= this.config.maxConcurrent) return;
+    // 获取锁，防止并发处理
+    if (this.dispatchQueueLock) {
+      console.log('[AgentPiBackgroundExecutor] Queue processing already in progress, skipping');
+      return;
+    }
+    this.dispatchQueueLock = true;
 
-    // 按评分排序队列
-    const scoredTasks = await this.scoreAndSortQueue();
-    if (scoredTasks.length === 0) return;
+    try {
+      if (this.dispatchQueue.length === 0) return;
+      if (this.runningTasks.size >= this.config.maxConcurrent) return;
 
-    // 取最高分的任务派发
-    const slotsAvailable = this.config.maxConcurrent - this.runningTasks.size;
-    const tasksToDispatch = scoredTasks.slice(0, slotsAvailable);
+      // 按评分排序队列
+      const scoredTasks = await this.scoreAndSortQueue();
+      if (scoredTasks.length === 0) return;
 
-    for (const scored of tasksToDispatch) {
-      const index = this.dispatchQueue.findIndex(q => q.taskId === scored.taskId);
-      if (index >= 0) {
-        const queued = this.dispatchQueue.splice(index, 1)[0];
-        console.log(`[AgentPiBackgroundExecutor] Dispatching queued task ${queued.taskId} (score: ${scored.score.toFixed(2)})`);
-        await this.executeTask(queued);
+      // 取最高分的任务派发
+      const slotsAvailable = this.config.maxConcurrent - this.runningTasks.size;
+      const tasksToDispatch = scoredTasks.slice(0, slotsAvailable);
+
+      for (const scored of tasksToDispatch) {
+        const index = this.dispatchQueue.findIndex(q => q.taskId === scored.taskId);
+        if (index >= 0) {
+          const queued = this.dispatchQueue.splice(index, 1)[0];
+          console.log(`[AgentPiBackgroundExecutor] Dispatching queued task ${queued.taskId} (score: ${scored.score.toFixed(2)})`);
+          await this.executeTask(queued);
+        }
       }
+    } finally {
+      this.dispatchQueueLock = false;
     }
   }
 
@@ -496,7 +518,10 @@ export class AgentPiBackgroundExecutor {
    * 处理执行任务请求
    */
   private async handleExecuteTask(payload: ExecuteTaskEvent['payload']): Promise<void> {
-    const { taskId, goalId, agentPrompt, requiredTools, contextKnowledge, timeoutMs } = payload;
+    const { taskId, goalId, taskType, agentPrompt, requiredTools, contextKnowledge, timeoutMs } = payload;
+
+    // DEBUG: 确认 handleExecuteTask 被调用
+    console.log(`[AgentPiExecutor] 🔄 handleExecuteTask called, taskId: ${taskId}, taskType: ${taskType}, running: ${this.runningTasks.size}/${this.config.maxConcurrent}, queue: ${this.dispatchQueue.length}`);
 
     // 检查任务是否已在运行
     if (this.runningTasks.has(taskId)) {
@@ -528,6 +553,7 @@ export class AgentPiBackgroundExecutor {
       await this.executeTask({
         taskId,
         goalId,
+        taskType,
         agentPrompt,
         requiredTools,
         contextKnowledge,
@@ -546,6 +572,7 @@ export class AgentPiBackgroundExecutor {
     const queued: QueuedTask = {
       taskId,
       goalId,
+      taskType,
       agentPrompt,
       requiredTools,
       contextKnowledge,
@@ -571,7 +598,10 @@ export class AgentPiBackgroundExecutor {
    * 执行具体任务（内部方法）
    */
   private async executeTask(queued: QueuedTask): Promise<void> {
-    const { taskId, goalId, agentPrompt, requiredTools, contextKnowledge, timeoutMs } = queued;
+    const { taskId, goalId, taskType, agentPrompt, requiredTools, contextKnowledge, timeoutMs } = queued;
+
+    // DEBUG: 确认 executeTask 被调用
+    console.log(`[AgentPiExecutor] ⚡ executeTask starting, taskId: ${taskId}, goalId: ${goalId}, taskType: ${taskType}`);
 
     const startTime = now();
 
@@ -588,6 +618,7 @@ export class AgentPiBackgroundExecutor {
         name: `task-${taskId.slice(0, 8)}`,
         taskId,
         goalId,
+        taskType,
         tools: allTools, // 使用从 ToolProvider 获取的所有工具
         timeoutMs: timeoutMs ?? this.config.defaultTimeoutMs,
       };
@@ -614,6 +645,9 @@ export class AgentPiBackgroundExecutor {
 
       // 构建增强 prompt
       const enhancedPrompt = this.buildEnhancedPrompt(agentPrompt, contextKnowledge, taskId);
+
+      // DEBUG: 确认调用 sessionManager.execute
+      console.log(`[AgentPiExecutor] 📞 Calling sessionManager.execute, sessionId: ${sessionHandle.id}, taskId: ${taskId}, taskType: ${taskType}`);
 
       // 在后台会话中执行
       const result = await this.sessionManager.execute(
@@ -672,6 +706,17 @@ export class AgentPiBackgroundExecutor {
 
       case "tool_call":
         console.log(`[AgentPiBackgroundExecutor] Tool called: ${event.toolName}`);
+        break;
+
+      case "heartbeat":
+        // 收到后台会话的心跳，更新任务的心跳时间戳
+        for (const [taskId, state] of this.runningTasks) {
+          if (state.sessionId === event.sessionId) {
+            state.lastHeartbeat = now();
+            console.log(`[AgentPiBackgroundExecutor] Received heartbeat for task ${taskId}`);
+            break;
+          }
+        }
         break;
 
       case "error":
