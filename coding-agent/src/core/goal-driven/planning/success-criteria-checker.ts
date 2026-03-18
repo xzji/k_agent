@@ -91,8 +91,6 @@ export class SuccessCriteriaChecker {
       throw new Error(`Goal not found: ${goalId}`);
     }
 
-    console.log(`[SuccessCriteriaChecker] Evaluating goal: ${goal.title}`);
-
     // Get goal-related knowledge
     const knowledge = await this.knowledgeStore.getByGoal(goalId);
     const taskSummary = await this.getTaskSummary(goalId);
@@ -427,8 +425,6 @@ Please reply with your choice (1, 2, or 3).`;
     if (!goal) {
       throw new Error(`Goal not found: ${goalId}`);
     }
-
-    console.log(`[SuccessCriteriaChecker] Processing incomplete feedback for ${goalId}`);
 
     // Analyze feedback to understand what's missing
     const analysis = await this.analyzeIncompleteFeedback(goal, userFeedback);

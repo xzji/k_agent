@@ -70,10 +70,9 @@ export class SubGoalStore implements ISubGoalStore {
         this.cache.set(subGoal.id, subGoal);
       }
 
-      console.log(`[SubGoalStore] Loaded ${this.cache.size} sub-goals`);
+      // Sub-goals loaded successfully
     } catch (error) {
       // File doesn't exist yet, start empty
-      console.log('[SubGoalStore] Starting with empty sub-goals');
     }
   }
 
@@ -94,7 +93,6 @@ export class SubGoalStore implements ISubGoalStore {
     await fs.writeFile(storagePath, JSON.stringify(storage, null, 2), 'utf-8');
 
     this.dirty = false;
-    console.log(`[SubGoalStore] Saved ${storage.subGoals.length} sub-goals`);
   }
 
   /**

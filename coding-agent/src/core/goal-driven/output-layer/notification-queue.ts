@@ -47,8 +47,6 @@ export class NotificationQueue implements INotificationQueue {
       this.queue.pop();
     }
 
-    console.log(`[NotificationQueue] Enqueued: ${fullNotification.title} (${fullNotification.priority})`);
-
     return fullNotification;
   }
 

@@ -112,10 +112,6 @@ export class CodingAgentLLMChannel {
       ...(this.model.headers ?? {}),
     };
 
-    console.log('[LLMChannel] Fetching from:', url);
-    console.log('[LLMChannel] Model:', this.model.id);
-    console.log('[LLMChannel] Provider:', this.model.provider);
-
     const response = await fetch(url, {
       method: 'POST',
       headers,
@@ -161,8 +157,6 @@ export class CodingAgentLLMChannel {
     content: string;
     usage?: { total_tokens: number };
   }> {
-    console.log('[LLMChannel] complete() called, prompt length:', prompt.length);
-
     const startTime = Date.now();
     const goalId = options?.goalId as string | undefined;
     const taskId = options?.taskId as string | undefined;
@@ -179,7 +173,6 @@ export class CodingAgentLLMChannel {
       });
 
       const duration = Date.now() - startTime;
-      console.log('[LLMChannel] complete() response length:', result.content.length);
 
       // 记录 LLM 响应日志
       await logLLMResponse(result.content, duration, goalId, taskId);
@@ -190,7 +183,6 @@ export class CodingAgentLLMChannel {
     } catch (error) {
       const duration = Date.now() - startTime;
       await logError(error instanceof Error ? error : String(error), 'llm_response', goalId, taskId, { duration });
-      console.error('[LLMChannel] Error completing prompt:', error);
       throw error;
     }
   }
@@ -205,10 +197,6 @@ export class CodingAgentLLMChannel {
     goalId?: string;
     taskId?: string;
   }): Promise<T> {
-    console.log('[LLMChannel] chatJSON() called');
-    console.log('[LLMChannel] Messages count:', params.messages.length);
-    console.log('[LLMChannel] Last message preview:', params.messages[params.messages.length - 1]?.content.slice(0, 100));
-
     const startTime = Date.now();
     const goalId = params.goalId;
     const taskId = params.taskId;
@@ -226,19 +214,6 @@ export class CodingAgentLLMChannel {
       });
 
       const duration = Date.now() - startTime;
-      console.log('[LLMChannel] Response received, length:', result.content.length);
-      console.log('[LLMChannel] Finish reason:', result.finishReason);
-
-      if (result.content.length > 0 && result.content.length < 500) {
-        console.log('[LLMChannel] Content preview:', result.content);
-      } else if (result.content.length >= 500) {
-        console.log('[LLMChannel] Content preview:', result.content.slice(0, 500) + '...');
-      }
-
-      // Check if response was truncated
-      if (result.finishReason === 'length') {
-        console.warn('[LLMChannel] Warning: Response was truncated due to max_tokens limit');
-      }
 
       // 记录 LLM 响应日志
       await logLLMResponse(result.content, duration, goalId, taskId);
@@ -248,7 +223,6 @@ export class CodingAgentLLMChannel {
     } catch (error) {
       const duration = Date.now() - startTime;
       await logError(error instanceof Error ? error : String(error), 'llm_response', goalId, taskId, { duration });
-      console.error('[LLMChannel] Failed to get JSON response:', error);
       throw error;
     }
   }
@@ -283,7 +257,6 @@ export class CodingAgentLLMChannel {
 
     // Validate we have something to parse
     if (!jsonStr || (jsonStr[0] !== '{' && jsonStr[0] !== '[')) {
-      console.error('[LLMChannel] No valid JSON found in response. Raw content:', content.slice(0, 500));
       throw new Error(`No valid JSON found in response. Content starts with: ${content.slice(0, 100)}`);
     }
 
@@ -292,7 +265,6 @@ export class CodingAgentLLMChannel {
     } catch (parseError) {
       // If truncated, try to fix incomplete JSON
       if (isTruncated || this.isLikelyTruncated(jsonStr)) {
-        console.log('[LLMChannel] Attempting to fix truncated JSON...');
         const fixed = this.attemptToFixTruncatedJSON(jsonStr);
         if (fixed) {
           try {
@@ -303,8 +275,6 @@ export class CodingAgentLLMChannel {
         }
       }
 
-      console.error('[LLMChannel] JSON parse error:', parseError);
-      console.error('[LLMChannel] Attempted to parse:', jsonStr.slice(0, 200));
       throw new Error(`Failed to parse JSON response: ${parseError}`);
     }
   }
@@ -392,7 +362,6 @@ export class CodingAgentLLMChannel {
 
     try {
       JSON.parse(fixed);
-      console.log('[LLMChannel] Successfully fixed truncated JSON');
       return fixed;
     } catch {
       return null;
@@ -422,7 +391,6 @@ export class CodingAgentExecutionPipeline {
    * Execute a task using coding-agent's tools
    */
   async run(task: Task): Promise<ExecutionResult> {
-    console.log(`[ExecutionPipeline] Executing task: ${task.title} (${task.type})`);
     const startTime = Date.now();
 
     try {
@@ -441,7 +409,6 @@ export class CodingAgentExecutionPipeline {
       return await this.executeWithAgent(task, prompt, startTime);
 
     } catch (error) {
-      console.error(`[ExecutionPipeline] Task execution failed:`, error);
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),

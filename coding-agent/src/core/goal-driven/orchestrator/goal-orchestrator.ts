@@ -395,7 +395,6 @@ export class GoalOrchestrator {
     }
 
     state.planConfirmed = true;
-    console.log(`[GoalOrchestrator] Plan confirmed for goal ${goalId}`);
   }
 
   /**
@@ -418,8 +417,6 @@ export class GoalOrchestrator {
         await this.taskStore.updateStatus(taskId, newStatus);
       }
     }
-
-    console.log(`[GoalOrchestrator] Activated ${state.taskIds.length} tasks for goal ${goalId}`);
   }
 
   // ============================================================================

@@ -105,6 +105,46 @@ export {
   type RoundLogEntry,
 } from './runtime/session-log-writer';
 
+// Log buffer and persister for background log view
+export {
+  LogBuffer,
+  type LogBufferConfig,
+} from './runtime/log-buffer';
+
+export {
+  LogPersister,
+} from './runtime/log-persister';
+
+// Background log view
+export {
+  BackgroundLogView,
+  type BackgroundLogViewHandle,
+} from './runtime/background-log-view';
+
+// Log message types
+export {
+  type UILogLevel,
+  type LogCategory,
+  type BackgroundLogPayload,
+  type BackgroundLogEvent,
+  isBackgroundLogPayload,
+} from './runtime/log-message-types';
+
+// UI Logger
+export {
+  UILogger,
+  type UILoggerConfig,
+} from './runtime/ui-logger';
+
+// Log aggregator
+export {
+  LogAggregator,
+  formatLogMessage,
+  formatAggregatedLogMessage,
+  type AggregatedLogMessage,
+  type LogAggregatorConfig,
+} from './runtime/log-aggregator';
+
 // Orchestrator
 export {
   GoalOrchestrator,

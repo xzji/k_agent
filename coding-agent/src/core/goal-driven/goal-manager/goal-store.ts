@@ -73,10 +73,9 @@ export class GoalStore implements IGoalStore {
         this.cache.set(goal.id, goal);
       }
 
-      console.log(`[GoalStore] Loaded ${this.cache.size} goals`);
+      // Goals loaded successfully
     } catch (error) {
       // File doesn't exist yet, start empty
-      console.log('[GoalStore] Starting with empty goals');
     }
   }
 
@@ -97,7 +96,6 @@ export class GoalStore implements IGoalStore {
     await fs.writeFile(storagePath, JSON.stringify(storage, null, 2), 'utf-8');
 
     this.dirty = false;
-    console.log(`[GoalStore] Saved ${storage.goals.length} goals`);
   }
 
   /**

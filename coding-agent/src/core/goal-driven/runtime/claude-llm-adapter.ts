@@ -635,8 +635,6 @@ export class ClaudeLLMChannel {
  */
 export class LocalExecutionPipeline {
   async run(task: Task): Promise<any> {
-    console.log(`[LocalExecution] 执行任务: ${task.title}`);
-
     // 模拟执行时间
     await this.delay(100);
 

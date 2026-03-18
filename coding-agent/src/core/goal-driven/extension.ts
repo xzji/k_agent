@@ -25,8 +25,9 @@
  */
 
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionFactory } from "../extensions/types.js";
+import type { ExtensionAPI, ExtensionFactory, ExtensionCommandContext } from "../extensions/types.js";
 import { getAgentDir } from "../../config.js";
+import { Key } from "@mariozechner/pi-tui";
 
 // New architecture imports
 import {
@@ -78,6 +79,20 @@ import {
 import { AgentPiBackgroundExecutor } from "./runtime/agent-pi-executor.js";
 import { initToolProvider } from "./runtime/tool-provider.js";
 
+import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+
+// Background log view imports
+import {
+  LogBuffer,
+  LogPersister,
+  BackgroundLogView,
+  UILogger,
+  type BackgroundLogPayload,
+  type UILogLevel,
+  isBackgroundLogPayload,
+} from "./index.js";
+
 // Reuse legacy IdleDetector and NotificationQueue
 import { IdleDetector } from "./output-layer/idle-detector.js";
 import { sleep } from "./utils/index.js";
@@ -116,6 +131,26 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   let backgroundExecutor: AgentPiBackgroundExecutor | null = null;
   let backgroundExecutorUnavailableReason: string | null = null;
 
+  // ── Log Buffer and Persister for Background Log View ──
+  let logBuffer: LogBuffer | null = null;
+  let logPersister: LogPersister | null = null;
+  let logCallbacks: Set<(log: BackgroundLogPayload) => void> = new Set();
+  let isBackgroundViewOpen: boolean = false;
+  let uiLogger: UILogger | null = null;
+
+  // ── Status Widget Management ──
+  interface GoalStatusWidgetData {
+    goalId: string;
+    goalTitle: string;
+    progress: number;
+    tasksRunning: number;
+    tasksPending: number;
+    tasksCompleted: number;
+    status: 'active' | 'paused' | 'completed' | 'gathering_info' | 'planning';
+  }
+  let currentWidgetData: GoalStatusWidgetData | null = null;
+  let savedContext: ExtensionCommandContext | null = null;
+
   // ── Initialization state ──
   let initialized = false;
 
@@ -129,6 +164,13 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       await configStore.init();
     }
 
+    // Initialize log buffer and persister for background log view
+    if (!logBuffer || !logPersister) {
+      const config = configStore.getConfig();
+      logBuffer = new LogBuffer({ maxSize: config.logBuffer.maxSize });
+      logPersister = new LogPersister();
+    }
+
     // Initialize logger with config
     if (!logger) {
       const logDir = join(getAgentDir(), "logs");
@@ -136,17 +178,22 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       logger = new GoalDrivenLogger({
         logDir,
         maxDays: 7,
-        consoleOutput: true,
+        consoleOutput: false, // 禁用控制台输出，避免破坏 TUI
         minLevel: 'debug',
         llmLogMode: config.llmLogMode,
       });
       await logger.init();
       setGlobalLogger(logger);
 
+      // Create UILogger for background tasks
+      uiLogger = new UILogger(pi.events, logger, {
+        minLevel: 'debug',
+        writeFileLog: true,
+      });
+
       // Listen for configuration changes to update logger
       configStore.onChange((newConfig) => {
         logger?.setLLMLogMode(newConfig.llmLogMode);
-        console.log(`[GoalDriven] LLM log mode changed to: ${newConfig.llmLogMode}`);
       });
 
       await logSystemAction('Goal-Driven Agent initialization started', { dataDir, llmLogMode: config.llmLogMode });
@@ -162,7 +209,6 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       if (ctx.model) {
         currentModel = ctx.model;
         modelRegistry = ctx.modelRegistry;
-        console.log(`[GoalDriven] Using ctx.model: ${currentModel.provider}/${currentModel.id}`);
       }
       // Method 2: Use ctx.getModel() if available
       else if (typeof ctx.getModel === 'function') {
@@ -170,14 +216,12 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         if (modelFromGetter) {
           currentModel = modelFromGetter;
           modelRegistry = ctx.modelRegistry;
-          console.log(`[GoalDriven] Using ctx.getModel(): ${currentModel.provider}/${currentModel.id}`);
         }
       }
     }
 
     // Fallback to settings if no model found in context
     if (!currentModel) {
-      console.log(`[GoalDriven] No model in context, falling back to settings`);
       const { SettingsManager } = await import("../settings-manager.js");
       const { ModelRegistry } = await import("../model-registry.js");
       const { AuthStorage } = await import("../auth-storage.js");
@@ -191,7 +235,6 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       if (defaultProvider && defaultModelId) {
         currentModel = modelRegistry.find(defaultProvider, defaultModelId);
-        console.log(`[GoalDriven] Using model from settings: ${currentModel?.provider}/${currentModel?.id}`);
       }
     }
 
@@ -263,7 +306,6 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       // Initialize ToolProvider for getting available tools from Agent Pi
       initToolProvider(resourceLoader);
-      console.log('[GoalDriven] ToolProvider initialized');
 
       // Get or create settings manager
       const { SettingsManager } = await import("../settings-manager.js");
@@ -281,10 +323,10 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         getAgentDir(),
         {}, // Use defaults from config store
         configStore!,
-        currentModel // Pass current model to ensure consistency with main session
+        currentModel, // Pass current model to ensure consistency with main session
+        uiLogger // Pass UILogger for background task logging
       );
       backgroundExecutor.initialize();
-      console.log('[GoalDriven] Background executor initialized');
     } else {
       // Record why background executor is not available
       if (!modelRegistry) {
@@ -292,7 +334,6 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       } else if (!currentModel) {
         backgroundExecutorUnavailableReason = 'No model selected. Please use /model to select a model first';
       }
-      console.log(`[GoalDriven] Background executor not available: ${backgroundExecutorUnavailableReason}`);
     }
 
     // Initialize Scheduler
@@ -350,7 +391,8 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       // Initialize handlers
       const infoCollectionHandler = new InfoCollectionHandler(
         orchestrator!,
-        contextGatherer
+        contextGatherer,
+        uiLogger!
       );
       const planConfirmationHandler = new PlanConfirmationHandler(orchestrator!);
       const executionHandler = new ExecutionHandler(scheduler!, taskStore!);
@@ -435,8 +477,170 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       modelId: currentModel?.id,
       provider: currentModel?.provider,
     });
-    console.log('[GoalDriven] Initialized successfully');
   }
+
+  // ── Status Widget Functions ──
+  /**
+   * Update status widget display
+   */
+  function updateStatusWidget(ctx: ExtensionCommandContext): void {
+    if (!ctx.hasUI) return;
+
+    if (!currentWidgetData) {
+      // No active goal, clear widget
+      ctx.ui.setWidget("goal-status-widget", undefined);
+      return;
+    }
+
+    const { goalTitle, progress, tasksRunning, tasksPending, status } = currentWidgetData;
+
+    // Status icon
+    const statusIcon: Record<string, string> = {
+      active: '🎯',
+      paused: '⏸️',
+      completed: '✅',
+      gathering_info: '📝',
+      planning: '📋',
+    };
+    const icon = statusIcon[status] ?? '🎯';
+
+    // Truncate title
+    const truncatedTitle = goalTitle.length > 15
+      ? goalTitle.slice(0, 15) + '...'
+      : goalTitle;
+
+    // Build status bar content
+    const parts = [
+      `${icon} ${truncatedTitle}`,
+      `进度: ${progress}%`,
+    ];
+
+    if (tasksRunning > 0) {
+      parts.push(`${tasksRunning}运行`);
+    }
+    if (tasksPending > 0) {
+      parts.push(`${tasksPending}等待`);
+    }
+
+    // Add shortcut hint (alt+b for background logs)
+    parts.push('⌥B日志');
+
+    const content = parts.join(' | ');
+    ctx.ui.setWidget("goal-status-widget", [content]);
+  }
+
+  /**
+   * Refresh status widget data from stores
+   */
+  async function refreshStatusWidget(): Promise<void> {
+    if (!savedContext || !goalStore || !taskStore) return;
+
+    const goals = await goalStore.getAllGoals();
+    const activeGoals = goals.filter(g =>
+      g.status === 'active' ||
+      g.status === 'gathering_info' ||
+      g.status === 'planning'
+    );
+
+    if (activeGoals.length === 0) {
+      currentWidgetData = null;
+    } else {
+      // Take the first active goal
+      const goal = activeGoals[0];
+      const tasks = await taskStore.getTasksByGoal(goal.id);
+
+      currentWidgetData = {
+        goalId: goal.id,
+        goalTitle: goal.title,
+        progress: goal.progress?.percentage ?? 0,
+        tasksRunning: tasks.filter(t => t.status === 'in_progress').length,
+        tasksPending: tasks.filter(t => t.status === 'ready' || t.status === 'pending').length,
+        tasksCompleted: tasks.filter(t => t.status === 'completed').length,
+        status: goal.status as GoalStatusWidgetData['status'],
+      };
+    }
+
+    updateStatusWidget(savedContext);
+  }
+
+  // ── Background Log Event Listener ──
+  // Listen for background log events and process them
+  pi.events.on("goal_driven:background_log", (payload: unknown) => {
+    if (!isBackgroundLogPayload(payload)) return;
+
+    // 1. Store in memory buffer for view switching
+    logBuffer?.add(payload);
+
+    // 2. Persist to file
+    logPersister?.write(payload);
+
+    // 3. Notify active log view subscribers (if open)
+    if (isBackgroundViewOpen) {
+      for (const callback of logCallbacks) {
+        callback(payload);
+      }
+    }
+
+    // 4. Show important logs in foreground view
+    // Important logs are always displayed, regardless of uiLogLevel setting
+    const isImportant = isImportantLog(payload);
+    if (isImportant) {
+      const icon = getLogIcon(payload.level);
+      const time = new Date(payload.timestamp).toLocaleTimeString();
+      const content = `${icon} **[${payload.source}]** ${time}\n${payload.message}`;
+
+      pi.sendMessage({
+        customType: "background_log_important",
+        content,
+        display: true,
+        details: payload,
+      });
+    } else if (configStore) {
+      // Non-important logs are filtered by uiLogLevel config
+      const config = configStore.getConfig();
+      const shouldDisplay = shouldDisplayLog(payload, config.uiLogLevel);
+
+      if (shouldDisplay) {
+        const icon = getLogIcon(payload.level);
+        const time = new Date(payload.timestamp).toLocaleTimeString();
+        const content = `${icon} **[${payload.source}]** ${time}\n${payload.message}`;
+
+        pi.sendMessage({
+          customType: "background_log",
+          content,
+          display: true,
+          details: payload,
+        });
+      }
+    }
+  });
+
+  // ── Task Result Event Listener ──
+  // Listen for task completion to update status widget and check goal completion
+  pi.events.on("goal_driven:task_result", async (result: unknown) => {
+    const taskResult = result as { taskId: string; goalId: string; success: boolean; output?: string };
+
+    // Refresh status widget when a task completes
+    await refreshStatusWidget();
+
+    // Check if goal is complete
+    if (taskResult?.goalId && goalStore) {
+      const goal = await goalStore.getGoal(taskResult.goalId);
+      if (goal) {
+        const tasks = await taskStore!.getTasksByGoal(taskResult.goalId);
+        const completedTasks = tasks.filter(t => t.status === 'completed');
+        const totalTasks = tasks.length;
+
+        if (totalTasks > 0 && completedTasks.length === totalTasks) {
+          // All tasks completed - goal complete
+          uiLogger?.info('GoalProgress', `🎉 目标完成：${goal.title}`, {
+            goalId: taskResult.goalId,
+            category: 'important',
+          });
+        }
+      }
+    }
+  });
 
   // ── Notification renderer registration ──
   pi.registerMessageRenderer<{ notification: import("./types.js").Notification }>(
@@ -446,6 +650,34 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       return undefined;
     },
   );
+
+  // ── Session Events: Initialize and update status widget ──
+  pi.on("session_start", async (_event, ctx) => {
+    if (!ctx.hasUI) return;
+
+    // Save context for later use in event handlers
+    savedContext = ctx as ExtensionCommandContext;
+
+    // Initialize components if needed
+    try {
+      await initialize(ctx);
+
+      // Refresh status widget
+      await refreshStatusWidget();
+    } catch (error) {
+      console.error('[GoalDriven] Failed to initialize on session_start:', error);
+    }
+  });
+
+  pi.on("session_switch", async (_event, ctx) => {
+    if (!ctx.hasUI) return;
+
+    // Update saved context
+    savedContext = ctx as ExtensionCommandContext;
+
+    // Refresh status widget
+    await refreshStatusWidget();
+  });
 
   // ── /goal command ──
   pi.registerCommand("goal", {
@@ -477,6 +709,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             return;
           }
 
+          // 发送前台日志：目标创建开始
+          uiLogger?.info('GoalProgress', `🎯 目标：${rest}`, { category: 'important' });
+
           ctx.ui.notify("⏳ 正在创建目标并收集信息...", "info");
           await logUserInput(`/goal add ${rest}`, { command: 'add' });
           await logSystemAction('Starting goal creation', { description: rest });
@@ -500,6 +735,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
               await scheduler!.start();
               await logSystemAction('Scheduler started', { goalId: result.goalId });
             }
+
+            // Update status widget
+            await refreshStatusWidget();
 
           } catch (error) {
             await logError(error, 'error', undefined, undefined, { command: 'add', description: rest });
@@ -593,6 +831,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           await scheduler!.stop();
           idleDetector?.stop();
           ctx.ui.notify("⏹️ 调度器已停止。使用 /goal resume 可恢复。", "info");
+
+          // Update status widget to show paused state
+          await refreshStatusWidget();
           return;
         }
 
@@ -618,6 +859,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           await scheduler!.start();
 
           ctx.ui.notify(`▶️ 调度器已恢复，正在追踪 ${goals.length} 个目标`, "info");
+
+          // Update status widget to show active state
+          await refreshStatusWidget();
           return;
         }
 
@@ -638,6 +882,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           });
 
           ctx.ui.notify(`✅ 目标已完成: ${goal!.title}`, "success");
+
+          // Update status widget
+          await refreshStatusWidget();
           return;
         }
 
@@ -655,6 +902,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           await goalStore!.updateGoal(goalId, { status: 'paused' });
 
           ctx.ui.notify(`⏸️ 目标已暂停: ${goal!.title}`, "info");
+
+          // Update status widget
+          await refreshStatusWidget();
           return;
         }
 
@@ -686,6 +936,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           await knowledgeStore!.clearAll?.() || await clearKnowledgeManual();
 
           ctx.ui.notify(`🗑️ 已清空 ${goals.length} 个目标及所有相关数据（包括任务、子目标、知识库）。`, "info");
+
+          // Update status widget (clear it since no goals)
+          await refreshStatusWidget();
           return;
         }
 
@@ -1138,6 +1391,203 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
     ctx.ui.notify(output, "info");
   }
+
+  // ── Background Log View Functions ──
+  // Helper function to open background log view using ctx.ui.custom()
+  async function openBackgroundLogView(ctx: ExtensionCommandContext): Promise<void> {
+    if (isBackgroundViewOpen) {
+      // Already open
+      return;
+    }
+
+    isBackgroundViewOpen = true;
+
+    try {
+      await ctx.ui.custom((tui, theme, keybindings, done) => {
+        // Create subscribe function for real-time logs
+        const subscribeToLogs = (callback: (log: BackgroundLogPayload) => void) => {
+          logCallbacks.add(callback);
+          return () => logCallbacks.delete(callback);
+        };
+
+        // Create the view component
+        const view = new BackgroundLogView(
+          logBuffer?.getAll() ?? [],
+          subscribeToLogs
+        );
+
+        // Get the component handle
+        const handle = view.createHandle(
+          theme,
+          () => {
+            isBackgroundViewOpen = false;
+            done();
+          }
+        );
+
+        return handle;
+      }, {
+        overlay: true,
+      });
+    } finally {
+      isBackgroundViewOpen = false;
+    }
+  }
+
+  // Register command to open background log view
+  pi.registerCommand("goal-logs", {
+    description: "Open background log view",
+    async handler(_args, ctx) {
+      await openBackgroundLogView(ctx);
+    },
+  });
+
+  // Register keyboard shortcut to toggle background log view
+  // Using alt+b (B for Background) - avoids conflict with all built-in ctrl+letter shortcuts
+  // This uses terminal control switching (not overlay) for a natural experience
+  pi.registerShortcut(Key.alt("b"), {
+    description: "View background logs (terminal control switch)",
+    handler: async (ctx) => {
+      if (!ctx.hasUI) {
+        pi.sendMessage({
+          customType: "goal_notification",
+          content: "⚠️ UI 不可用",
+          display: true,
+        });
+        return;
+      }
+
+      // Initialize log persister if not already done
+      if (!logPersister) {
+        const { LogPersister } = await import("./runtime/log-persister.js");
+        logPersister = new LogPersister();
+      }
+
+      try {
+        await ctx.ui.custom<void>((tui, _theme, _kb, done) => {
+          // 1. Stop Pi TUI to release terminal control
+          tui.stop();
+
+          // 2. Ensure stdin is in normal mode (not raw mode) for less to work properly
+          if (process.stdin.isTTY) {
+            try {
+              if (process.stdin.isRaw) {
+                process.stdin.setRawMode(false);
+              }
+            } catch {
+              // Ignore if setRawMode fails
+            }
+            process.stdin.pause();
+          }
+
+          // 3. Clear screen and show instructions
+          process.stdout.write("\x1b[2J\x1b[H");
+          process.stdout.write("\x1b[33m═════════════════════════════════════════════════════════════\x1b[0m\r\n");
+          process.stdout.write("\x1b[33m📋 后台日志视图\x1b[0m\r\n");
+          process.stdout.write("\x1b[33m  • Ctrl+C 停止跟踪进入浏览模式\x1b[0m\r\n");
+          process.stdout.write("\x1b[33m  • q 退出返回前台\x1b[0m\r\n");
+          process.stdout.write("\x1b[33m═════════════════════════════════════════════════════════════\x1b[0m\r\n\r\n");
+
+          // 4. Get log file path from LogPersister
+          const logPath = logPersister!.getLogPath();
+
+          // 5. Ensure log file exists (less will error on non-existent file)
+          if (!fs.existsSync(logPath)) {
+            const header = `# Background Session Log\n# Created: ${new Date().toISOString()}\n\n`;
+            fs.writeFileSync(logPath, header);
+          }
+
+          // 6. ★ 使用 script 命令创建独立伪终端
+          // script 会创建新的 pty，less 在其中运行，Ctrl+C 信号只发送到新的进程组
+          // 这完全隔离了信号，不需要手动处理 SIGINT
+          //
+          // 默认进入浏览模式（可自由滚动），按 Shift+F 进入跟踪模式
+          try {
+            spawnSync("script", [
+              "-q",           // 静默模式，不记录 session 日志
+              "/dev/null",    // 输出到 /dev/null（我们只想要 pty 隔离）
+              "less",
+              "-P", "📋 后台日志视图 | Shift+F 跟踪 | q 退出返回前台",
+              "+G",           // 跳到文件末尾（但不进入跟踪模式）
+              logPath
+            ], {
+              stdio: "inherit",
+            });
+          } catch (error) {
+            console.error("Failed to open log viewer:", error);
+          } finally {
+            // 7. Restart Pi TUI
+            tui.start();
+            tui.requestRender(true);
+            done();
+          }
+
+          return { render: () => [], invalidate: () => {} };
+        });
+      } catch (error) {
+        pi.sendMessage({
+          customType: "goal_notification",
+          content: `❌ 打开日志视图失败: ${String(error)}`,
+          display: true,
+        });
+      }
+    },
+  });
 };
+
+// ── Helper functions for log filtering ──
+
+/**
+ * Check if a log should be considered important (shown in foreground)
+ *
+ * Important logs are displayed in the foreground view to inform users of:
+ * - Goal creation/completion
+ * - User input required
+ * - Key discoveries
+ * - Errors
+ */
+function isImportantLog(log: BackgroundLogPayload): boolean {
+  // 1. Explicitly marked as important
+  if (log.category === 'important') return true;
+
+  // 2. Error level logs are always important
+  if (log.level === 'error') return true;
+
+  // 3. Specific sources that require user attention or indicate key events
+  const importantSources = [
+    'ActionRequired',    // User needs to take action
+    'GoalProgress',      // Goal creation/completion updates
+    'KnowledgeCreated',  // Key information discovered
+  ];
+  if (importantSources.includes(log.source)) return true;
+
+  return false;
+}
+
+/**
+ * Check if a log should be displayed based on UI log level configuration
+ */
+function shouldDisplayLog(log: BackgroundLogPayload, minLevel: UILogLevel | 'none'): boolean {
+  if (minLevel === 'none') return false;
+
+  const levels: (UILogLevel | 'none')[] = ['debug', 'info', 'warn', 'error', 'none'];
+  const minLevelIndex = levels.indexOf(minLevel);
+  const logLevelIndex = levels.indexOf(log.level);
+
+  return logLevelIndex >= minLevelIndex;
+}
+
+/**
+ * Get icon for log level
+ */
+function getLogIcon(level: UILogLevel): string {
+  const icons: Record<UILogLevel, string> = {
+    debug: '🔍',
+    info: 'ℹ️',
+    warn: '⚠️',
+    error: '❌',
+  };
+  return icons[level] ?? '📝';
+}
 
 export default goalDrivenExtension;

@@ -5,15 +5,27 @@
  * Manages the loop of asking questions and processing user responses.
  */
 
-import type { Goal, GoalOrchestrator, ContextGatherer } from "../index.js";
+import type { Goal, GoalOrchestrator, ContextGatherer, UILogger } from "../index.js";
 import type { InputContext, HandlerResult } from "./types.js";
 import { logUserInput, logSystemAction, logError } from "../utils/logger.js";
 
 export class InfoCollectionHandler {
+  private uiLogger?: UILogger;
+
   constructor(
     private orchestrator: GoalOrchestrator,
-    private contextGatherer: ContextGatherer
-  ) {}
+    private contextGatherer: ContextGatherer,
+    uiLogger?: UILogger
+  ) {
+    this.uiLogger = uiLogger;
+  }
+
+  /**
+   * 设置 UILogger
+   */
+  setUILogger(logger: UILogger): void {
+    this.uiLogger = logger;
+  }
 
   async handle(
     goal: Goal,
@@ -49,6 +61,12 @@ export class InfoCollectionHandler {
         const questionsText = result.nextQuestions
           .map((q, i) => `${i + 1}. ${q.question}`)
           .join("\n");
+
+        // 发送前台日志：需要用户输入
+        this.uiLogger?.info('ActionRequired', `❓ 需要您的输入：${result.nextQuestions[0]?.question || '请回答问题'}`, {
+          goalId: goal.id,
+          category: 'important',
+        });
 
         return {
           action: "handled",

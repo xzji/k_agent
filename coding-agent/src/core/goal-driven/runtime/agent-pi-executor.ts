@@ -27,6 +27,8 @@ import type {
   IGoalStore,
   TaskType,
 } from "../types.js";
+import type { UILogger } from "./ui-logger.js";
+import type { LogCategory } from "./log-message-types.js";
 import { generateId, now } from "../utils/index.js";
 import { logError, logSystemAction } from "../utils/logger.js";
 import {
@@ -177,6 +179,7 @@ export class AgentPiBackgroundExecutor {
   private configStore?: GoalDrivenConfigStore;
   private configUnsubscribe?: () => void;
   private goalStore: IGoalStore;
+  private uiLogger?: UILogger;
 
   // 任务派发队列
   private dispatchQueue: QueuedTask[] = [];
@@ -196,14 +199,15 @@ export class AgentPiBackgroundExecutor {
     agentDir: string,
     config?: Partial<BackgroundExecutionConfig>,
     configStore?: GoalDrivenConfigStore,
-    currentModel?: Model<any>
+    currentModel?: Model<any>,
+    uiLogger?: UILogger
   ) {
-    console.log(`[AgentPiBackgroundExecutor] Constructor called with model: ${currentModel?.provider}/${currentModel?.id}`);
     this.taskStore = taskStore;
     this.knowledgeStore = knowledgeStore;
     this.notificationQueue = notificationQueue;
     this.goalStore = goalStore;
     this.configStore = configStore;
+    this.uiLogger = uiLogger;
 
     // Use config store values if available, otherwise use defaults
     const defaultTimeoutMs = configStore?.get('taskDefaultTimeoutMs') ?? 600000;
@@ -223,7 +227,8 @@ export class AgentPiBackgroundExecutor {
       settingsManager,
       resourceLoader,
       agentDir,
-      currentModel
+      currentModel,
+      uiLogger
     );
 
     // Listen for config changes
@@ -232,8 +237,38 @@ export class AgentPiBackgroundExecutor {
         this.config.defaultTimeoutMs = newConfig.taskDefaultTimeoutMs;
         this.config.heartbeatTimeoutMs = newConfig.taskHeartbeatTimeoutMs;
         this.config.maxConcurrent = newConfig.maxConcurrentTasks;
-        console.log(`[AgentPiBackgroundExecutor] Config updated: defaultTimeout=${newConfig.taskDefaultTimeoutMs}ms, heartbeatTimeout=${newConfig.taskHeartbeatTimeoutMs}ms, maxConcurrent=${newConfig.maxConcurrentTasks}`);
       });
+    }
+  }
+
+  /**
+   * 设置 UILogger（用于后续注入）
+   */
+  setUILogger(logger: UILogger): void {
+    this.uiLogger = logger;
+    this.sessionManager.setUILogger(logger);
+  }
+
+  /**
+   * 内部日志方法
+   */
+  private log(
+    level: 'debug' | 'info' | 'warn' | 'error',
+    source: string,
+    message: string,
+    options?: {
+      taskId?: string;
+      goalId?: string;
+      category?: LogCategory;
+      data?: Record<string, unknown>;
+    }
+  ): void {
+    if (this.uiLogger) {
+      this.uiLogger.log(level, source, message, options);
+    } else {
+      // Fallback to console.log if UILogger not available
+      const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : level === 'debug' ? '🔍' : 'ℹ️';
+      console.log(`[AgentPiExecutor] ${prefix} [${source}] ${message}`);
     }
   }
 
@@ -242,13 +277,13 @@ export class AgentPiBackgroundExecutor {
    */
   initialize(): void {
     if (this.isInitialized) {
-      console.log("[AgentPiBackgroundExecutor] Already initialized");
+      this.log('debug', 'TaskScheduler', 'Already initialized');
       return;
     }
 
     // 监听执行任务请求
     this.pi.events.on("goal_driven:execute_task", (payload: any) => {
-      console.log(`[AgentPiExecutor] 📥 Received execute_task event, taskId: ${payload?.taskId}, goalId: ${payload?.goalId}`);
+      this.log('debug', 'TaskScheduler', `收到 execute_task 事件, taskId: ${payload?.taskId}`);
       this.handleExecuteTask(payload);
     });
 
@@ -259,7 +294,7 @@ export class AgentPiBackgroundExecutor {
     this.startDispatchLoop();
 
     this.isInitialized = true;
-    console.log("[AgentPiBackgroundExecutor] Initialized with BackgroundSessionManager, maxConcurrent:", this.config.maxConcurrent);
+    this.log('info', 'TaskScheduler', `初始化完成, maxConcurrent: ${this.config.maxConcurrent}`);
   }
 
   /**
@@ -280,7 +315,7 @@ export class AgentPiBackgroundExecutor {
   private async processDispatchQueue(): Promise<void> {
     // 获取锁，防止并发处理
     if (this.dispatchQueueLock) {
-      console.log('[AgentPiBackgroundExecutor] Queue processing already in progress, skipping');
+      this.log('debug', 'QueueOperation', '队列处理中，跳过');
       return;
     }
     this.dispatchQueueLock = true;
@@ -301,7 +336,7 @@ export class AgentPiBackgroundExecutor {
         const index = this.dispatchQueue.findIndex(q => q.taskId === scored.taskId);
         if (index >= 0) {
           const queued = this.dispatchQueue.splice(index, 1)[0];
-          console.log(`[AgentPiBackgroundExecutor] Dispatching queued task ${queued.taskId} (score: ${scored.score.toFixed(2)})`);
+          this.log('info', 'TaskScheduler', `派发队列任务 ${queued.taskId}, score: ${scored.score.toFixed(2)}`);
           await this.executeTask(queued);
         }
       }
@@ -520,25 +555,29 @@ export class AgentPiBackgroundExecutor {
   private async handleExecuteTask(payload: ExecuteTaskEvent['payload']): Promise<void> {
     const { taskId, goalId, taskType, agentPrompt, requiredTools, contextKnowledge, timeoutMs } = payload;
 
-    // DEBUG: 确认 handleExecuteTask 被调用
-    console.log(`[AgentPiExecutor] 🔄 handleExecuteTask called, taskId: ${taskId}, taskType: ${taskType}, running: ${this.runningTasks.size}/${this.config.maxConcurrent}, queue: ${this.dispatchQueue.length}`);
+    // 记录任务处理
+    this.log('debug', 'TaskScheduler', `handleExecuteTask, taskId: ${taskId}, running: ${this.runningTasks.size}/${this.config.maxConcurrent}, queue: ${this.dispatchQueue.length}`);
 
     // 检查任务是否已在运行
     if (this.runningTasks.has(taskId)) {
-      console.warn(`[AgentPiBackgroundExecutor] Task ${taskId} is already running`);
+      this.log('warn', 'TaskScheduler', `任务 ${taskId} 已在运行中`);
       return;
     }
 
     // 检查任务是否已在队列中
     if (this.dispatchQueue.some(q => q.taskId === taskId)) {
-      console.warn(`[AgentPiBackgroundExecutor] Task ${taskId} is already in dispatch queue`);
+      this.log('warn', 'TaskScheduler', `任务 ${taskId} 已在派发队列中`);
       return;
     }
 
     // 获取任务信息用于评分
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
-      console.error(`[AgentPiBackgroundExecutor] Task ${taskId} not found`);
+      this.log('error', 'TaskLifecycle', `Task ${taskId} not found`, {
+        taskId,
+        goalId,
+        category: 'important',
+      });
       this.emitTaskResult(taskId, goalId, {
         success: false,
         error: "Task not found",
@@ -549,7 +588,7 @@ export class AgentPiBackgroundExecutor {
 
     // 如果有空闲槽位，直接执行
     if (this.runningTasks.size < this.config.maxConcurrent) {
-      console.log(`[AgentPiBackgroundExecutor] Starting task ${taskId} immediately (${this.runningTasks.size + 1}/${this.config.maxConcurrent})`);
+      this.log('info', 'TaskScheduler', `立即启动任务 ${taskId} (${this.runningTasks.size + 1}/${this.config.maxConcurrent})`);
       await this.executeTask({
         taskId,
         goalId,
@@ -567,7 +606,7 @@ export class AgentPiBackgroundExecutor {
     }
 
     // 队列已满，加入队列
-    console.log(`[AgentPiBackgroundExecutor] Queue full, adding task ${taskId} to dispatch queue (position: ${this.dispatchQueue.length + 1})`);
+    this.log('info', 'QueueOperation', `队列已满，任务 ${taskId} 加入等待队列 (position: ${this.dispatchQueue.length + 1})`);
 
     const queued: QueuedTask = {
       taskId,
@@ -600,8 +639,11 @@ export class AgentPiBackgroundExecutor {
   private async executeTask(queued: QueuedTask): Promise<void> {
     const { taskId, goalId, taskType, agentPrompt, requiredTools, contextKnowledge, timeoutMs } = queued;
 
-    // DEBUG: 确认 executeTask 被调用
-    console.log(`[AgentPiExecutor] ⚡ executeTask starting, taskId: ${taskId}, goalId: ${goalId}, taskType: ${taskType}`);
+    // 记录任务开始
+    this.log('info', 'TaskLifecycle', `开始执行任务, taskId: ${taskId}, type: ${taskType}`, {
+      taskId,
+      goalId,
+    });
 
     const startTime = now();
 
@@ -646,8 +688,8 @@ export class AgentPiBackgroundExecutor {
       // 构建增强 prompt
       const enhancedPrompt = this.buildEnhancedPrompt(agentPrompt, contextKnowledge, taskId);
 
-      // DEBUG: 确认调用 sessionManager.execute
-      console.log(`[AgentPiExecutor] 📞 Calling sessionManager.execute, sessionId: ${sessionHandle.id}, taskId: ${taskId}, taskType: ${taskType}`);
+      // 记录会话执行
+      this.log('debug', 'SessionLifecycle', `调用 sessionManager.execute, sessionId: ${sessionHandle.id}`);
 
       // 在后台会话中执行
       const result = await this.sessionManager.execute(
@@ -671,7 +713,11 @@ export class AgentPiBackgroundExecutor {
       await this.handleTaskSuccess(taskId, goalId, result, contextKnowledge);
 
     } catch (error) {
-      console.error(`[AgentPiBackgroundExecutor] Task ${taskId} failed:`, error);
+      this.log('error', 'TaskLifecycle', `Task ${taskId} failed: ${error instanceof Error ? error.message : String(error)}`, {
+        taskId,
+        goalId,
+        category: 'important',
+      });
 
       await logError(error instanceof Error ? error : String(error), "executor_execute", goalId, taskId);
 
@@ -691,7 +737,7 @@ export class AgentPiBackgroundExecutor {
   private handleSessionEvent(event: BackgroundSessionEvent): void {
     switch (event.type) {
       case "session_started":
-        console.log(`[AgentPiBackgroundExecutor] Session ${event.sessionId} started`);
+        this.log('debug', 'SessionLifecycle', `会话启动: ${event.sessionId}`);
         break;
 
       case "output":
@@ -705,7 +751,7 @@ export class AgentPiBackgroundExecutor {
         break;
 
       case "tool_call":
-        console.log(`[AgentPiBackgroundExecutor] Tool called: ${event.toolName}`);
+        this.log('info', 'ToolExecution', `Tool 调用: ${event.toolName}`);
         break;
 
       case "heartbeat":
@@ -713,18 +759,20 @@ export class AgentPiBackgroundExecutor {
         for (const [taskId, state] of this.runningTasks) {
           if (state.sessionId === event.sessionId) {
             state.lastHeartbeat = now();
-            console.log(`[AgentPiBackgroundExecutor] Received heartbeat for task ${taskId}`);
+            this.log('debug', 'Heartbeat', `收到心跳, taskId: ${taskId}`);
             break;
           }
         }
         break;
 
       case "error":
-        console.error(`[AgentPiBackgroundExecutor] Session error: ${event.error}`);
+        this.log('error', 'SessionLifecycle', `会话错误: ${event.error}`, {
+          category: 'important',
+        });
         break;
 
       case "terminated":
-        console.log(`[AgentPiBackgroundExecutor] Session terminated: ${event.reason}`);
+        this.log('info', 'SessionLifecycle', `会话终止: ${event.reason}`);
         break;
     }
   }
@@ -749,9 +797,15 @@ export class AgentPiBackgroundExecutor {
       contextKnowledge
     );
 
-    // 保存知识
+    // 保存知识并发送前台日志
     for (const entry of knowledgeEntries) {
       await this.knowledgeStore.save(entry);
+      // 发送"发现关键信息"日志到前台
+      this.log('info', 'KnowledgeCreated', `📋 发现关键信息：${entry.content.slice(0, 100)}${entry.content.length > 100 ? '...' : ''}`, {
+        goalId,
+        taskId,
+        category: 'important',
+      });
     }
 
     // 发送结果
@@ -787,7 +841,7 @@ export class AgentPiBackgroundExecutor {
       const timeSinceLastHeartbeat = now() - state.lastHeartbeat;
 
       if (timeSinceLastHeartbeat > this.config.heartbeatTimeoutMs) {
-        console.warn(`[AgentPiBackgroundExecutor] Task ${taskId} heartbeat timeout`);
+        this.log('warn', 'TaskLifecycle', `Task ${taskId} heartbeat timeout`, { taskId });
         this.handleTaskTimeout(taskId, "Heartbeat timeout");
         return;
       }
@@ -807,7 +861,10 @@ export class AgentPiBackgroundExecutor {
     const state = this.runningTasks.get(taskId);
     if (!state) return;
 
-    console.error(`[AgentPiBackgroundExecutor] Task ${taskId} ${reason}`);
+    this.log('error', 'TaskLifecycle', `Task ${taskId} ${reason}`, {
+      taskId,
+      category: 'important',
+    });
 
     // 中止任务
     state.abortController.abort();

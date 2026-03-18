@@ -67,7 +67,6 @@ export class ContextGatherer {
     );
 
     if (activeInteractiveTask) {
-      console.log(`[ContextGatherer] Reusing existing interactive task: ${activeInteractiveTask.id}`);
       return activeInteractiveTask;
     }
 
@@ -332,8 +331,6 @@ Respond with JSON in this format:
     const maxRounds = this.configStore.get('maxInfoCollectionRounds');
     const minRounds = this.configStore.get('minInfoCollectionRounds');
 
-    console.log(`[ContextGatherer] Current round: ${currentRound}/${maxRounds}`);
-
     // Get goal for context
     // Note: GoalStore is not directly available, would need to be injected
     // For now, we'll create a minimal goal context from the task
@@ -351,8 +348,6 @@ Respond with JSON in this format:
       allCollectedInfo
     );
 
-    console.log(`[ContextGatherer] Sufficiency check: hasEnoughInfo=${sufficiencyCheck.hasEnoughInfo}, round=${currentRound}/${maxRounds}`);
-
     // Complete if: (1) has enough info AND at least minRounds OR (2) reached max rounds
     const canComplete = (sufficiencyCheck.hasEnoughInfo && currentRound >= minRounds) || currentRound >= maxRounds;
 
@@ -360,8 +355,6 @@ Respond with JSON in this format:
       const completionReason = sufficiencyCheck.hasEnoughInfo
         ? 'Sufficient information collected'
         : `Maximum rounds (${maxRounds}) reached, proceeding with available information`;
-
-      console.log(`[ContextGatherer] Completing: ${completionReason}`);
 
       // Information gathering complete
       await this.taskStore.updateStatus(taskId, 'completed', {

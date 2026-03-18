@@ -168,7 +168,6 @@ export class UnifiedTaskScheduler {
         this.config.cycleIntervalMs = newConfig.schedulerCycleIntervalMs;
         // Recreate semaphore with new capacity
         this.semaphore = new Semaphore(newConfig.maxConcurrentTasks);
-        console.log(`[Scheduler] Config updated: maxConcurrent=${newConfig.maxConcurrentTasks}, cycleInterval=${newConfig.schedulerCycleIntervalMs}ms`);
       });
     }
   }
@@ -178,17 +177,14 @@ export class UnifiedTaskScheduler {
    */
   async start(): Promise<void> {
     if (this.running) {
-      console.log('[Scheduler] Already running');
       return;
     }
 
     this.running = true;
-    console.log('[Scheduler] Started');
 
     // Setup background execution event listener
     if (this.useBackgroundExecution && this.eventBus) {
       this.eventUnsubscribe = this.eventBus.on('goal_driven:task_result', this.handleTaskResult.bind(this));
-      console.log('[Scheduler] Background execution enabled');
     }
 
     // Start the first cycle
@@ -220,11 +216,8 @@ export class UnifiedTaskScheduler {
 
     // Wait for running tasks to complete
     if (this.runningTasks.size > 0) {
-      console.log(`[Scheduler] Waiting for ${this.runningTasks.size} tasks to complete...`);
       await Promise.all(this.runningTasks.values());
     }
-
-    console.log('[Scheduler] Stopped');
   }
 
   /**
@@ -260,13 +253,11 @@ export class UnifiedTaskScheduler {
   private async runCycle(): Promise<void> {
     if (!this.running) return;
 
-    console.log('[Scheduler] Running cycle...');
     const cycleStart = now();
 
     try {
       // 1. Get all ready tasks (including dimension exploration and structured tasks)
       const readyTasks = await this.getReadyTasks();
-      console.log(`[Scheduler] Found ${readyTasks.length} ready tasks`);
 
       // 2. Update task statuses based on dependencies
       await this.updateBlockedTaskStatuses();
@@ -283,8 +274,6 @@ export class UnifiedTaskScheduler {
       // 6. Calculate available slots considering both local running tasks and dispatched background tasks
       const effectiveRunningCount = this.runningTasks.size + this.dispatchedTasks.size;
       const availableSlots = Math.max(0, this.config.maxConcurrent - effectiveRunningCount);
-
-      console.log(`[Scheduler] Concurrency: running=${this.runningTasks.size}, dispatched=${this.dispatchedTasks.size}, max=${this.config.maxConcurrent}, available=${availableSlots}`);
 
       // 7. Execute tasks (with concurrency control if enabled)
       const tasksToExecute = prioritized.slice(0, availableSlots);
@@ -543,7 +532,6 @@ export class UnifiedTaskScheduler {
   private async executeUnifiedTask(unifiedTask: UnifiedTask): Promise<void> {
     // Check if already running
     if (this.runningTasks.has(unifiedTask.id)) {
-      console.log(`[Scheduler] Task ${unifiedTask.id} already running`);
       return;
     }
 
@@ -562,7 +550,6 @@ export class UnifiedTaskScheduler {
    * Run task with proper state management
    */
   private async runTaskWithState(unifiedTask: UnifiedTask): Promise<void> {
-    console.log(`[Scheduler] Executing task: ${unifiedTask.id} (${unifiedTask.type})`);
     const startTime = now();
 
     try {
@@ -585,7 +572,6 @@ export class UnifiedTaskScheduler {
 
       // For background execution, skip immediate status update - it will be handled by handleTaskResult
       if (useBackgroundExecution) {
-        console.log(`[Scheduler] Task ${task.id} dispatched to background executor, skipping immediate completion`);
         // Stats are not updated here - they will be updated when background execution completes
         return;
       }
@@ -624,9 +610,6 @@ export class UnifiedTaskScheduler {
         });
       }
     }
-
-    const duration = now() - startTime;
-    console.log(`[Scheduler] Task ${unifiedTask.id} completed in ${duration}ms`);
   }
 
   /**
@@ -689,8 +672,6 @@ export class UnifiedTaskScheduler {
       throw new Error('EventBus not available for background execution');
     }
 
-    console.log(`[Scheduler] Dispatching task ${task.id} (type: ${task.type}) to background executor`);
-
     // Mark task as dispatched
     this.dispatchedTasks.set(task.id, { goalId: task.goalId, startTime: now() });
 
@@ -706,7 +687,6 @@ export class UnifiedTaskScheduler {
     const actualTools = toolProvider ? await toolProvider.getToolNames() : task.execution.requiredTools;
 
     // Dispatch to background executor via EventBus
-    console.log(`[Scheduler] 🚀 Emitting execute_task for task ${task.id}, goal ${task.goalId}, type: ${task.type}`);
     this.eventBus.emit('goal_driven:execute_task', {
       taskId: task.id,
       goalId: task.goalId,
@@ -732,11 +712,6 @@ export class UnifiedTaskScheduler {
    */
   private async handleTaskResult(payload: TaskResultEvent['payload']): Promise<void> {
     const { taskId, goalId, success, output, error, duration, knowledgeEntries } = payload;
-
-    console.log(`[Scheduler] Received result for task ${taskId}: ${success ? 'success' : 'failed'}`);
-    if (output) {
-      console.log(`[Scheduler] Task output:\n${output.slice(0, 500)}${output.length > 500 ? '...' : ''}`);
-    }
 
     // Remove from dispatched tasks
     this.dispatchedTasks.delete(taskId);
@@ -1028,11 +1003,6 @@ Please ensure this execution provides fresh insights and varies from previous ru
       // Assess value
       const assessment = await this.valueAssessor.assessValue(task.id, result);
 
-      // Log assessment
-      console.log(
-        `[Scheduler] Task ${task.id} value score: ${assessment.valueScore}, notify: ${assessment.shouldNotify}`
-      );
-
       // Only notify if valuable
       if (assessment.shouldNotify) {
         // Wait for user idle before sending notification
@@ -1040,11 +1010,8 @@ Please ensure this execution provides fresh insights and varies from previous ru
 
         if (isIdle || task.priority === 'critical') {
           await this.enqueueValueBasedNotification(task, result, assessment);
-        } else {
-          // User not idle, delay notification
-          console.log(`[Scheduler] Delaying notification for task ${task.id} - user not idle`);
-          // Could implement delayed notification queue here
         }
+        // User not idle - could implement delayed notification queue here
       }
     } catch (error) {
       console.error(`[Scheduler] Error assessing value for task ${task.id}:`, error);

@@ -12,6 +12,12 @@ export interface GoalDrivenConfig {
   taskDefaultTimeoutMs: number;
   taskHeartbeatTimeoutMs: number;
   llmLogMode: 'minimal' | 'standard' | 'verbose';
+  // Log buffer configuration
+  logBuffer: {
+    maxSize: number;
+  };
+  // UI log level
+  uiLogLevel: 'debug' | 'info' | 'warn' | 'error' | 'none';
 }
 
 export const DEFAULT_GOAL_DRIVEN_CONFIG: GoalDrivenConfig = {
@@ -22,15 +28,21 @@ export const DEFAULT_GOAL_DRIVEN_CONFIG: GoalDrivenConfig = {
   taskDefaultTimeoutMs: 600000,
   taskHeartbeatTimeoutMs: 120000,
   llmLogMode: 'minimal',
+  logBuffer: {
+    maxSize: 200,
+  },
+  uiLogLevel: 'none',
 };
 
-export const CONFIG_RANGES: Record<keyof GoalDrivenConfig, { min: number; max: number }> = {
+export const CONFIG_RANGES: Record<keyof GoalDrivenConfig, { min: number; max: number } | undefined> = {
   maxConcurrentTasks: { min: 1, max: 10 },
   maxInfoCollectionRounds: { min: 1, max: 5 },
   minInfoCollectionRounds: { min: 1, max: 3 },
   schedulerCycleIntervalMs: { min: 10000, max: 300000 },
   taskDefaultTimeoutMs: { min: 60000, max: 1800000 },
   taskHeartbeatTimeoutMs: { min: 30000, max: 300000 },
+  logBuffer: { min: 50, max: 1000 },
+  uiLogLevel: undefined,
 };
 
 export const CONFIG_LABELS: Record<keyof GoalDrivenConfig, string> = {
@@ -41,6 +53,8 @@ export const CONFIG_LABELS: Record<keyof GoalDrivenConfig, string> = {
   taskDefaultTimeoutMs: "任务默认超时（毫秒）",
   taskHeartbeatTimeoutMs: "心跳超时（毫秒）",
   llmLogMode: "LLM日志模式",
+  logBuffer: "日志缓冲区大小",
+  uiLogLevel: "UI日志级别",
 };
 
 export const CONFIG_DESCRIPTIONS: Record<keyof GoalDrivenConfig, string> = {
@@ -51,4 +65,6 @@ export const CONFIG_DESCRIPTIONS: Record<keyof GoalDrivenConfig, string> = {
   taskDefaultTimeoutMs: "单个任务在后台执行的最大时间",
   taskHeartbeatTimeoutMs: "任务无响应判定为超时的时间",
   llmLogMode: "LLM请求/响应的日志详细程度: minimal=仅基本信息, standard=摘要(前1000字符), verbose=完整内容并在控制台输出",
+  logBuffer: "内存中保留的最大日志条数，用于视图切换",
+  uiLogLevel: "后台日志显示级别: debug=所有日志, info=信息及以上, warn=警告及以上, error=仅错误, none=不显示",
 };

@@ -78,10 +78,9 @@ export class KnowledgeStore implements IKnowledgeStore {
         }
       }
 
-      console.log(`[KnowledgeStore] Loaded ${this.cache.size} entries`);
+      // Knowledge entries loaded successfully
     } catch (error) {
       // File doesn't exist yet, start empty
-      console.log('[KnowledgeStore] Starting with empty knowledge base');
     }
   }
 
@@ -101,8 +100,6 @@ export class KnowledgeStore implements IKnowledgeStore {
 
     await fs.writeFile(storagePath, lines.join('\n') + '\n', 'utf-8');
     this.dirty = false;
-
-    console.log(`[KnowledgeStore] Saved ${lines.length} entries`);
   }
 
   /**
@@ -502,8 +499,6 @@ ${basePrompt}`;
 
     // Rewrite the file
     await this.saveToDisk();
-
-    console.log(`[KnowledgeStore] Compacted: ${before} -> ${after} entries`);
 
     return { before, after };
   }

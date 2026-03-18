@@ -35,8 +35,8 @@ export class ToolProvider {
       // 目前先使用默认列表，后续可以扩展为动态获取
       this.tools = this.getDefaultTools();
       return this.tools;
-    } catch (error) {
-      console.warn("[ToolProvider] Failed to get tools from Agent Pi, using defaults:", error);
+    } catch {
+      // Fallback to defaults on error
       return this.getDefaultTools();
     }
   }

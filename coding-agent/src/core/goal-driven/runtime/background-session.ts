@@ -21,6 +21,8 @@ import type { ModelRegistry } from "../../model-registry.js";
 import type { SettingsManager } from "../../settings-manager.js";
 import type { ResourceLoader } from "../resource-loader.js";
 import type { ExecutionResult, KnowledgeEntry, TaskType } from "../types.js";
+import type { UILogger } from "./ui-logger.js";
+import type { LogCategory } from "./log-message-types.js";
 import { now, generateId } from "../utils/index.js";
 import { logError, logSystemAction } from "../utils/logger.js";
 import { SessionLogWriter } from "./session-log-writer.js";
@@ -138,15 +140,48 @@ export class BackgroundSessionManager {
   private sessionLogWriter: SessionLogWriter;
   private messageBuffers = new Map<string, string>();
   private sessionTurnIndex = new Map<string, number>();
+  private uiLogger?: UILogger;
 
   constructor(
     private modelRegistry: ModelRegistry,
     private settingsManager: SettingsManager,
     private resourceLoader: ResourceLoader,
     private agentDir: string,
-    private currentModel?: Model<any>
+    private currentModel?: Model<any>,
+    uiLogger?: UILogger
   ) {
     this.sessionLogWriter = new SessionLogWriter(`${agentDir}/session-logs`);
+    this.uiLogger = uiLogger;
+  }
+
+  /**
+   * 设置 UILogger（用于后续注入）
+   */
+  setUILogger(logger: UILogger): void {
+    this.uiLogger = logger;
+  }
+
+  /**
+   * 内部日志方法
+   */
+  private log(
+    level: 'debug' | 'info' | 'warn' | 'error',
+    source: string,
+    message: string,
+    options?: {
+      taskId?: string;
+      goalId?: string;
+      category?: LogCategory;
+      data?: Record<string, unknown>;
+    }
+  ): void {
+    if (this.uiLogger) {
+      this.uiLogger.log(level, source, message, options);
+    } else {
+      // Fallback to console.log if UILogger not available
+      const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : level === 'debug' ? '🔍' : 'ℹ️';
+      console.log(`[BackgroundSessionManager] ${prefix} [${source}] ${message}`);
+    }
   }
 
   /**
@@ -162,7 +197,10 @@ export class BackgroundSessionManager {
    * 创建一个新的独立会话用于后台任务执行
    */
   async createSession(config: BackgroundSessionConfig): Promise<BackgroundSessionHandle> {
-    console.log(`[BackgroundSessionManager] 📝 createSession called, taskId: ${config.taskId}, goalId: ${config.goalId}, taskType: ${config.taskType}`);
+    this.log('info', 'SessionLifecycle', `创建后台会话, taskId: ${config.taskId}, taskType: ${config.taskType}`, {
+      taskId: config.taskId,
+      goalId: config.goalId,
+    });
 
     const sessionId = `bg-${config.taskId.slice(0, 8)}-${generateId().slice(0, 8)}`;
     const sessionPath = `${this.agentDir}/sessions/${sessionId}.jsonl`;
@@ -179,7 +217,7 @@ export class BackgroundSessionManager {
       const { AgentSession: AgentSessionClass } = await import("../../agent-session.js");
       const session = new AgentSessionClass(agentConfig);
 
-      console.log(`[BackgroundSessionManager] AgentSession created, session.model: ${session.model?.provider}/${session.model?.id}`);
+      this.log('debug', 'SessionLifecycle', `AgentSession 创建完成, model: ${session.model?.provider}/${session.model?.id}`);
 
       // 创建句柄
       const handle: BackgroundSessionHandle = {
@@ -248,7 +286,10 @@ export class BackgroundSessionManager {
     }
   ): Promise<BackgroundSessionResult> {
     // DEBUG: 确认 execute 被调用
-    console.log(`[BackgroundSessionManager] 🔥 execute called, sessionId: ${handle.id}, taskId: ${handle.config.taskId}, taskType: ${handle.config.taskType}`);
+    this.log('info', 'SessionLifecycle', `执行会话, sessionId: ${handle.id}, taskId: ${handle.config.taskId}`, {
+      taskId: handle.config.taskId,
+      goalId: handle.config.goalId,
+    });
 
     const runningSession = this.sessions.get(handle.id);
     if (!runningSession) {
@@ -262,7 +303,10 @@ export class BackgroundSessionManager {
     const startTime = now();
     const timeoutMs = options?.timeoutMs ?? handle.config.timeoutMs ?? 600000;
     const timeoutAt = startTime + timeoutMs;
-    console.log(`[BackgroundSessionManager] Session ${handle.id} starting with timeout: ${timeoutMs}ms (${timeoutMs/1000}s)`);
+    this.log('debug', 'SessionLifecycle', `会话启动, sessionId: ${handle.id}, timeout: ${timeoutMs/1000}s`, {
+      taskId: handle.config.taskId,
+      goalId: handle.config.goalId,
+    });
 
     // 更新状态
     runningSession.startTime = startTime;
@@ -443,19 +487,19 @@ export class BackgroundSessionManager {
     // 使用当前模型（从主会话传入）或回退到默认模型
     let model = this.currentModel;
 
-    console.log(`[BackgroundSessionManager] buildAgentSessionConfig called, currentModel: ${model?.provider}/${model?.id}`);
+    this.log('debug', 'SessionLifecycle', `buildAgentSessionConfig, model: ${model?.provider}/${model?.id}`);
 
     if (!model) {
       // 如果没有传入当前模型，尝试获取默认模型
-      console.log(`[BackgroundSessionManager] No currentModel, falling back to default settings`);
+      this.log('debug', 'SessionLifecycle', 'No currentModel, falling back to default settings');
       const defaultProvider = this.settingsManager.getDefaultProvider();
       const defaultModelId = this.settingsManager.getDefaultModel();
-      console.log(`[BackgroundSessionManager] Default from settings: ${defaultProvider}/${defaultModelId}`);
+      this.log('debug', 'SessionLifecycle', `Default from settings: ${defaultProvider}/${defaultModelId}`);
       model =
         defaultProvider && defaultModelId
           ? this.modelRegistry.find(defaultProvider, defaultModelId)
           : undefined;
-      console.log(`[BackgroundSessionManager] Resolved model from settings: ${model?.provider}/${model?.id}`);
+      this.log('debug', 'SessionLifecycle', `Resolved model from settings: ${model?.provider}/${model?.id}`);
     }
 
     if (!model) {
@@ -480,7 +524,7 @@ export class BackgroundSessionManager {
 
     // 创建 Agent 核心 - 必须通过 initialState 传入 model 和 systemPrompt
     // 同时设置 getApiKey 回调，让 Agent 能够获取 API key
-    console.log(`[BackgroundSessionManager] About to create AgentCore with model: ${model.provider}/${model.id}`);
+    this.log('debug', 'SessionLifecycle', `创建 AgentCore, model: ${model.provider}/${model.id}`);
     const agent = new AgentCore({
       initialState: {
         model,
@@ -488,14 +532,14 @@ export class BackgroundSessionManager {
       },
       // 关键：设置 getApiKey 回调，让 Agent 能够获取 API key
       getApiKey: async (provider: string) => {
-        console.log(`[BackgroundSessionManager.Agent.getApiKey] Provider: ${provider}`);
+        this.log('debug', 'SessionLifecycle', `Agent.getApiKey, provider: ${provider}`);
         const key = await this.modelRegistry.getApiKeyForProvider(provider);
-        console.log(`[BackgroundSessionManager.Agent.getApiKey] Key: ${key ? `${key.slice(0, 8)}...` : 'NOT FOUND'}`);
+        this.log('debug', 'SessionLifecycle', `Agent.getApiKey result: ${key ? 'found' : 'NOT FOUND'}`);
         return key;
       },
     });
 
-    console.log(`[BackgroundSessionManager] AgentCore created, agent.state.model: ${agent.state.model?.provider}/${agent.state.model?.id}`);
+    this.log('debug', 'SessionLifecycle', `AgentCore 创建完成, model: ${agent.state.model?.provider}/${agent.state.model?.id}`);
 
     return {
       agent,
@@ -526,7 +570,7 @@ export class BackgroundSessionManager {
       switch (event.type) {
         case "agent_start": {
           // Agent 启动
-          console.log(`[Session ${sessionId}] 🚀 Agent Started\n`);
+          this.log('info', 'SessionLifecycle', `Agent 启动, sessionId: ${sessionId}`);
           this.sessionLogWriter.addEntry(sessionId, {
             turnIndex,
             type: 'agent_start',
@@ -538,9 +582,9 @@ export class BackgroundSessionManager {
           // Agent 结束
           const reason = (event as any).reason || "completed";
           const error = (event as any).error;
-          console.log(`[Session ${sessionId}] 🏁 Agent Ended, reason: ${reason}`);
+          this.log('info', 'SessionLifecycle', `Agent 结束, sessionId: ${sessionId}, reason: ${reason}`);
           if (error) {
-            console.log(`[Session ${sessionId}] ❌ Error: ${JSON.stringify(error)}`);
+            this.log('error', 'SessionLifecycle', `Agent 错误: ${JSON.stringify(error)}`, { data: { error } });
           }
           this.sessionLogWriter.addEntry(sessionId, {
             turnIndex,
@@ -551,7 +595,7 @@ export class BackgroundSessionManager {
 
         case "turn_start": {
           // 实时输出回合开始
-          console.log(`\n[Session ${sessionId}] ─── Turn ${turnIndex} ───\n`);
+          this.log('debug', 'TurnEvent', `Turn ${turnIndex} 开始, sessionId: ${sessionId}`);
           // 记录日志
           this.sessionLogWriter.addEntry(sessionId, {
             turnIndex,
@@ -589,7 +633,7 @@ export class BackgroundSessionManager {
           // 消息流结束，输出换行和日志记录
           const fullContent = this.messageBuffers.get(sessionId) || '';
           if (fullContent) {
-            console.log('\n');
+            this.log('debug', 'LLMStream', `消息流结束, 长度: ${fullContent.length}`);
 
             this.sessionLogWriter.addEntry(sessionId, {
               turnIndex,
@@ -609,7 +653,7 @@ export class BackgroundSessionManager {
 
           switch (assistantEvent.type) {
             case "thinking_start":
-              console.log(`[Session ${sessionId}] 💭 Thinking started...`);
+              this.log('debug', 'LLMStream', `Thinking 开始, sessionId: ${sessionId}`);
               break;
 
             case "thinking_delta":
@@ -618,11 +662,11 @@ export class BackgroundSessionManager {
               break;
 
             case "thinking_end":
-              console.log(`\n[Session ${sessionId}] 💭 Thinking ended`);
+              this.log('debug', 'LLMStream', `Thinking 结束, sessionId: ${sessionId}`);
               break;
 
             case "text_start":
-              console.log(`[Session ${sessionId}] 📝 Response started...`);
+              this.log('debug', 'LLMStream', `响应开始, sessionId: ${sessionId}`);
               break;
 
             case "text_delta":
@@ -631,11 +675,11 @@ export class BackgroundSessionManager {
               break;
 
             case "text_end":
-              console.log(`\n[Session ${sessionId}] 📝 Response ended`);
+              this.log('debug', 'LLMStream', `响应结束, sessionId: ${sessionId}`);
               break;
 
             case "toolcall_start":
-              console.log(`[Session ${sessionId}] 🔧 Tool call started...`);
+              this.log('debug', 'LLMStream', `Tool call 开始, sessionId: ${sessionId}`);
               break;
 
             case "toolcall_delta":
@@ -643,15 +687,15 @@ export class BackgroundSessionManager {
               break;
 
             case "toolcall_end":
-              console.log(`\n[Session ${sessionId}] 🔧 Tool call ended: ${assistantEvent.toolName || assistantEvent.toolCall?.tool || 'unknown'}`);
+              this.log('debug', 'LLMStream', `Tool call 结束: ${assistantEvent.toolName || assistantEvent.toolCall?.tool || 'unknown'}`);
               break;
 
             case "done":
-              console.log(`[Session ${sessionId}] ✅ Message done, reason: ${assistantEvent.reason}`);
+              this.log('debug', 'LLMStream', `消息完成, reason: ${assistantEvent.reason}`);
               break;
 
             case "error":
-              console.log(`[Session ${sessionId}] ❌ Error: ${assistantEvent.errorMessage}`);
+              this.log('error', 'LLMStream', `错误: ${assistantEvent.errorMessage}`);
               break;
           }
           break;
@@ -673,8 +717,8 @@ export class BackgroundSessionManager {
               ? content.slice(0, 500) + '\n... (truncated)'
               : content;
 
-            // 实时输出用户输入
-            console.log(`[Session ${sessionId}] 👤 User:\n${truncatedContent}\n`);
+            // 记录用户输入
+            this.log('debug', 'LLMStream', `用户输入: ${truncatedContent}`);
 
             // 记录日志
             this.sessionLogWriter.addEntry(sessionId, {
@@ -686,16 +730,16 @@ export class BackgroundSessionManager {
           }
           // 处理 assistant 和 toolResult 消息
           else if (message && (message.role === "assistant" || message.role === "toolResult")) {
-            console.log(`[Session ${sessionId}] 📝 Processing ${message.role} message`);
+            this.log('debug', 'LLMStream', `处理 ${message.role} 消息`);
             const content = typeof message.content === "string"
               ? message.content
               : JSON.stringify(message.content);
 
-            // 实时输出消息
+            // 记录消息
             if (message.role === "assistant") {
-              console.log(`[Session ${sessionId}] 🤖 Assistant:\n${content}\n`);
+              this.log('debug', 'LLMStream', `Assistant: ${content.slice(0, 200)}...`);
             } else if (message.role === "toolResult") {
-              console.log(`[Session ${sessionId}] 📝 Tool Result:\n${content}\n`);
+              this.log('debug', 'ToolExecution', `Tool Result: ${content.slice(0, 200)}...`);
             }
 
             const output: BackgroundSessionOutput = {
@@ -721,7 +765,7 @@ export class BackgroundSessionManager {
           const toolName = (event as any).toolName || "unknown";
           const partialResult = (event as any).partialResult || (event as any).content;
           if (partialResult) {
-            console.log(`[Session ${sessionId}] 🔄 Tool Update (${toolName}): ${partialResult}\n`);
+            this.log('debug', 'ToolExecution', `Tool 更新 (${toolName}): ${partialResult}`);
           }
           break;
         }
@@ -730,9 +774,10 @@ export class BackgroundSessionManager {
           const toolName = (event as any).toolName || "unknown";
           const params = (event as any).args;
 
-          // 实时输出工具调用
-          console.log(`[Session ${sessionId}] 🔧 Tool Call: ${toolName}`);
-          console.log(`   Params: ${JSON.stringify(params)}\n`);
+          // 记录工具调用
+          this.log('info', 'ToolExecution', `Tool Call: ${toolName}`, {
+            data: { params },
+          });
 
           this.emitEvent({
             type: "tool_call",
@@ -756,13 +801,13 @@ export class BackgroundSessionManager {
           const result = (event as any).result;
           const isError = (event as any).isError;
 
-          // 实时输出工具结果
+          // 记录工具结果
           if (isError) {
-            console.log(`[Session ${sessionId}] ❌ Tool Error: ${JSON.stringify(result)}\n`);
+            this.log('error', 'ToolExecution', `Tool 错误: ${JSON.stringify(result)}`);
           } else {
             const resultStr = JSON.stringify(result);
             const truncatedResult = resultStr.length > 200 ? resultStr.slice(0, 200) + '...' : resultStr;
-            console.log(`[Session ${sessionId}] ✅ Tool Result: ${truncatedResult}\n`);
+            this.log('info', 'ToolExecution', `Tool 结果: ${truncatedResult}`);
           }
 
           this.emitEvent({
@@ -784,8 +829,8 @@ export class BackgroundSessionManager {
         }
 
         case "turn_end": {
-          // 实时输出回合结束
-          console.log(`[Session ${sessionId}] ─── Turn ${turnIndex} Complete ───\n`);
+          // 回合结束
+          this.log('debug', 'TurnEvent', `Turn ${turnIndex} 结束, sessionId: ${sessionId}`);
 
           // 记录日志
           this.sessionLogWriter.addEntry(sessionId, {
@@ -794,7 +839,7 @@ export class BackgroundSessionManager {
           });
 
           // 处理结果
-          console.log(`[BackgroundSessionManager] Session ${sessionId} received turn_end event`);
+          this.log('debug', 'SessionLifecycle', `Session ${sessionId} received turn_end event`);
           this.handleTurnEnd(sessionId, event as any);
           break;
         }
@@ -802,8 +847,10 @@ export class BackgroundSessionManager {
         case "error": {
           const errorMessage = (event as any).message || "Unknown error";
 
-          // 实时输出错误
-          console.log(`[Session ${sessionId}] ❌ Error: ${errorMessage}\n`);
+          // 记录错误
+          this.log('error', 'SessionLifecycle', `错误: ${errorMessage}`, {
+            category: 'important',
+          });
 
           this.emitEvent({
             type: "error",
@@ -840,10 +887,7 @@ export class BackgroundSessionManager {
     }
 
     const model = runningSession.session.model;
-    console.log(`[BackgroundSessionManager] 📤 Sending message to Agent Pi`);
-    console.log(`[BackgroundSessionManager]    Session: ${sessionId}`);
-    console.log(`[BackgroundSessionManager]    Model: ${model?.provider}/${model?.id}`);
-    console.log(`[BackgroundSessionManager]    Message:\n${message.slice(0, 1000)}${message.length > 1000 ? '\n... (truncated)' : ''}`);
+    this.log('debug', 'SessionLifecycle', `发送消息到 Agent Pi, sessionId: ${sessionId}, model: ${model?.provider}/${model?.id}`);
 
     await runningSession.session.prompt(message, {
       expandPromptTemplates: true,
@@ -874,11 +918,8 @@ export class BackgroundSessionManager {
       completedAt: now(),
     };
 
-    // 实时输出最终结果
-    console.log(`\n[Session ${sessionId}] 📊 Session Complete`);
-    console.log(`   Success: ${result.success}`);
-    console.log(`   Duration: ${result.duration}ms`);
-    console.log(`   Output: ${finalOutput.slice(0, 200)}${finalOutput.length > 200 ? '...' : ''}\n`);
+    // 记录最终结果
+    this.log('info', 'SessionLifecycle', `会话完成, sessionId: ${sessionId}, success: ${result.success}, duration: ${result.duration}ms`);
 
     runningSession.handle.status = "completed";
     runningSession.handle.isRunning = false;
@@ -934,7 +975,7 @@ export class BackgroundSessionManager {
       try {
         listener(event);
       } catch (error) {
-        console.error("Error in event listener:", error);
+        this.log('error', 'SessionLifecycle', `Error in event listener: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
@@ -972,23 +1013,24 @@ export function initBackgroundSessionManager(
   settingsManager: SettingsManager,
   resourceLoader: ResourceLoader,
   agentDir: string,
-  currentModel?: Model<any>
+  currentModel?: Model<any>,
+  uiLogger?: UILogger
 ): BackgroundSessionManager {
   if (!globalBackgroundSessionManager) {
-    console.log(`[initBackgroundSessionManager] Creating new singleton with model: ${currentModel?.provider}/${currentModel?.id}`);
     globalBackgroundSessionManager = new BackgroundSessionManager(
       modelRegistry,
       settingsManager,
       resourceLoader,
       agentDir,
-      currentModel
+      currentModel,
+      uiLogger
     );
   } else if (currentModel) {
     // 更新当前模型以确保与主会话保持一致
-    console.log(`[initBackgroundSessionManager] Updating existing singleton model to: ${currentModel.provider}/${currentModel.id}`);
     globalBackgroundSessionManager.setCurrentModel(currentModel);
-  } else {
-    console.log(`[initBackgroundSessionManager] Returning existing singleton, no model update`);
+    if (uiLogger) {
+      globalBackgroundSessionManager.setUILogger(uiLogger);
+    }
   }
   return globalBackgroundSessionManager;
 }
