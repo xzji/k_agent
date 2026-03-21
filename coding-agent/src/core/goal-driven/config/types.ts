@@ -27,7 +27,7 @@ export const DEFAULT_GOAL_DRIVEN_CONFIG: GoalDrivenConfig = {
   schedulerCycleIntervalMs: 60000,
   taskDefaultTimeoutMs: 600000,
   taskHeartbeatTimeoutMs: 120000,
-  llmLogMode: 'minimal',
+  llmLogMode: 'standard',
   logBuffer: {
     maxSize: 200,
   },

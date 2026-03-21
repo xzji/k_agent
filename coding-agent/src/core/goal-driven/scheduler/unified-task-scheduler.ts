@@ -1016,7 +1016,7 @@ Please ensure this execution provides fresh insights and varies from previous ru
     } catch (error) {
       await logError(error instanceof Error ? error : String(error), 'assess_and_notify', task.goalId, task.id);
       // Fallback to simple notification
-      this.enqueueResultNotification(task, result);
+      await this.enqueueResultNotification(task, result);
     }
   }
 
@@ -1077,7 +1077,11 @@ Please ensure this execution provides fresh insights and varies from previous ru
     if (task.subGoalId) {
       const subGoal = await this.subGoalStore.getSubGoal(task.subGoalId);
       if (subGoal) {
-        subGoalName = subGoal.name;
+        // 获取子目标序号
+        const subGoals = await this.subGoalStore.getSubGoalsByGoal(task.goalId);
+        const index = subGoals.findIndex(sg => sg.id === task.subGoalId);
+        const ordinal = index >= 0 ? `第${index + 1}个子目标` : '子目标';
+        subGoalName = `${ordinal} - ${subGoal.name}`;
       }
     }
 
@@ -1098,7 +1102,7 @@ Please ensure this execution provides fresh insights and varies from previous ru
 
     // Sub-goal info
     if (subGoalName) {
-      lines.push(`**所属阶段**: ${subGoalName}`);
+      lines.push(`**子目标**: ${subGoalName}`);
     }
 
     // Task type and priority
@@ -1138,12 +1142,22 @@ Please ensure this execution provides fresh insights and varies from previous ru
       lines.push('```');
     }
 
-    // Value assessment (collapsed for cleaner look)
+    // Extract and display output files
+    const outputFiles = this.extractOutputFiles(output);
+    if (outputFiles.length > 0) {
+      lines.push('');
+      lines.push('## 📁 输出文件');
+      lines.push('');
+      for (const file of outputFiles) {
+        lines.push(`- \`${file}\``);
+      }
+    }
+
+    // Value assessment
     lines.push('');
     lines.push('---');
     lines.push('');
-    lines.push(`<details>`);
-    lines.push(`<summary>📈 价值评估 (点击展开)</summary>`);
+    lines.push('📈 价值评估');
     lines.push('');
     lines.push(`- 相关度: ${Math.round(assessment.valueDimensions.relevance * 100)}%`);
     lines.push(`- 新颖度: ${Math.round(assessment.valueDimensions.novelty * 100)}%`);
@@ -1152,7 +1166,6 @@ Please ensure this execution provides fresh insights and varies from previous ru
     if (assessment.reasoning) {
       lines.push(`- ${assessment.reasoning}`);
     }
-    lines.push(`</details>`);
 
     return lines.join('\n');
   }
@@ -1222,14 +1235,64 @@ Please ensure this execution provides fresh insights and varies from previous ru
   }
 
   /**
+   * Extract file paths from output text
+   * Matches common patterns like:
+   * - Saved to: /path/to/file
+   * - File saved: /path/to/file
+   * - Written to /path/to/file
+   * - Created: /path/to/file
+   */
+  private extractOutputFiles(output: string): string[] {
+    const files: string[] = [];
+
+    // Common file path patterns
+    const patterns = [
+      /(?:saved? to|written to|created|输出到|保存到|写入)[:\s]*([\/\~][^\s\n]+\.[a-zA-Z0-9]+)/gi,
+      /([\/\~][^\s\n]+\.(md|txt|json|csv|html|pdf|doc|docx|xlsx|py|js|ts|tsx|jsx))/gi,
+    ];
+
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(output)) !== null) {
+        const filePath = match[1];
+        // Avoid duplicates and very short paths
+        if (filePath && filePath.length > 5 && !files.includes(filePath)) {
+          files.push(filePath);
+        }
+      }
+    }
+
+    return files.slice(0, 5); // Limit to 5 files
+  }
+
+  /**
    * Enqueue notification for task result (legacy, used as fallback)
    */
-  private enqueueResultNotification(task: Task, result: ExecutionResult): void {
+  private async enqueueResultNotification(task: Task, result: ExecutionResult): Promise<void> {
+    // Get sub-goal info
+    let subGoalInfo = '';
+    if (task.subGoalId) {
+      const subGoal = await this.subGoalStore.getSubGoal(task.subGoalId);
+      if (subGoal) {
+        // 获取子目标序号
+        const subGoals = await this.subGoalStore.getSubGoalsByGoal(task.goalId);
+        const index = subGoals.findIndex(sg => sg.id === task.subGoalId);
+        const ordinal = index >= 0 ? `第${index + 1}个子目标` : '子目标';
+        subGoalInfo = `**子目标**: ${ordinal} - ${subGoal.name}\n\n`;
+      }
+    }
+
+    // Extract output files
+    const outputFiles = this.extractOutputFiles(result.output || '');
+    const filesInfo = outputFiles.length > 0
+      ? `\n\n**输出文件**:\n${outputFiles.map(f => `- \`${f}\``).join('\n')}`
+      : '';
+
     const notification: Omit<Notification, 'id' | 'createdAt'> = {
       type: 'report',
       priority: task.priority === 'critical' ? 'high' : 'medium',
       title: `Task completed: ${task.title}`,
-      content: result.output || 'Task completed successfully',
+      content: subGoalInfo + (result.output || 'Task completed successfully') + filesInfo,
       goalId: task.goalId,
       taskId: task.id,
     };

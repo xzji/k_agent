@@ -694,10 +694,10 @@ export class BackgroundSessionManager {
   private setupSessionListeners(sessionId: string, session: AgentSession): void {
     // AgentSession 使用 subscribe 方法订阅所有事件
     session.subscribe((event) => {
-      // 从 turn_start/turn_end 事件更新 turnIndex
-      if (event.type === 'turn_start' || event.type === 'turn_end') {
-        const eventTurnIndex = (event as any).turnIndex ?? 0;
-        this.sessionTurnIndex.set(sessionId, eventTurnIndex);
+      // 手动递增 turnIndex（事件可能没有 turnIndex 属性）
+      if (event.type === 'turn_start') {
+        const currentIndex = this.sessionTurnIndex.get(sessionId) ?? 0;
+        this.sessionTurnIndex.set(sessionId, currentIndex + 1);
       }
 
       // 使用跟踪的 turnIndex
@@ -731,7 +731,8 @@ export class BackgroundSessionManager {
 
         case "turn_start": {
           // 输出回合分隔线
-          this.log('info', 'TurnEvent', `───────────────── Turn ${turnIndex} ─────────────────`);
+          const taskId = this.sessions.get(sessionId)?.handle.config.taskId ?? 'unknown';
+          this.log('info', 'TurnEvent', `───────────────── Turn ${turnIndex} (${taskId}) ─────────────────`);
           this.log('debug', 'TurnEvent', `sessionId: ${sessionId}`);
           // 记录日志
           this.sessionLogWriter.addEntry(sessionId, {
@@ -1155,8 +1156,8 @@ export class BackgroundSessionManager {
 
     // 发送重要日志到前台显示问题
     this.log('info', 'ActionRequired', `❓ ${question}`, {
-      taskId: this.sessions.get(sessionId)?.handle.taskId,
-      goalId: this.sessions.get(sessionId)?.handle.goalId,
+      taskId: this.sessions.get(sessionId)?.handle.config.taskId,
+      goalId: this.sessions.get(sessionId)?.handle.config.goalId,
       category: 'important',
       data: { toolCallId, context, options },
     });

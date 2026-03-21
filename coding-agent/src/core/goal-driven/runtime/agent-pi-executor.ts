@@ -31,6 +31,7 @@ import type { UILogger } from "./ui-logger.js";
 import type { LogCategory } from "./log-message-types.js";
 import { generateId, now } from "../utils/index.js";
 import { logError, logSystemAction } from "../utils/logger.js";
+import { join } from "node:path";
 import {
   BackgroundSessionManager,
   type BackgroundSessionConfig,
@@ -180,6 +181,7 @@ export class AgentPiBackgroundExecutor {
   private configUnsubscribe?: () => void;
   private goalStore: IGoalStore;
   private uiLogger?: UILogger;
+  private readonly agentDir: string;
 
   // 任务派发队列
   private dispatchQueue: QueuedTask[] = [];
@@ -208,6 +210,7 @@ export class AgentPiBackgroundExecutor {
     this.goalStore = goalStore;
     this.configStore = configStore;
     this.uiLogger = uiLogger;
+    this.agentDir = agentDir;
 
     // Use config store values if available, otherwise use defaults
     const defaultTimeoutMs = configStore?.get('taskDefaultTimeoutMs') ?? 600000;
@@ -663,6 +666,7 @@ export class AgentPiBackgroundExecutor {
         taskType,
         tools: allTools, // 使用从 ToolProvider 获取的所有工具
         timeoutMs: timeoutMs ?? this.config.defaultTimeoutMs,
+        cwd: join(this.agentDir, 'goal-driven', 'tasks', goalId), // 设置工作目录为目标任务目录
       };
 
       // 创建后台会话

@@ -132,6 +132,11 @@ export class BackgroundLogView {
 
     // Render logs
     for (const log of visibleLogs) {
+      // 为 system_action 添加上分隔线
+      if (log.source === 'system_action') {
+        lines.push(fg("dim", "─".repeat(Math.max(0, usableWidth))));
+      }
+
       const time = new Date(log.timestamp).toLocaleTimeString();
       const levelIcon = this.getLevelIcon(log.level);
       const source = log.source.length > 15 ? log.source.slice(0, 15) + "..." : log.source;
@@ -140,6 +145,21 @@ export class BackgroundLogView {
       const line = `${levelIcon} ${time} [${source}] ${message}`;
       const coloredLine = this.colorizeLine(line, log.level, theme);
       lines.push(coloredLine.slice(0, Math.max(0, usableWidth)));
+
+      // For LLM logs, expand to show full data
+      if (log.source === 'llm_request' && log.data?.prompt) {
+        const promptLines = this.formatLLMData(log.data, 'request', usableWidth, theme);
+        lines.push(...promptLines);
+      }
+      if (log.source === 'llm_response' && log.data?.response) {
+        const responseLines = this.formatLLMData(log.data, 'response', usableWidth, theme);
+        lines.push(...responseLines);
+      }
+
+      // 为 system_action 添加下分隔线
+      if (log.source === 'system_action') {
+        lines.push(fg("dim", "─".repeat(Math.max(0, usableWidth))));
+      }
     }
 
     // Fill remaining space if needed
@@ -156,6 +176,48 @@ export class BackgroundLogView {
   }
 
   /**
+   * Format LLM data for display
+   */
+  private formatLLMData(
+    data: Record<string, unknown>,
+    type: 'request' | 'response',
+    width: number,
+    theme: { fg: (color: string, text: string) => string; style: (styles: string[], text: string) => string }
+  ): string[] {
+    const lines: string[] = [];
+    const indent = "  ";
+    const contentWidth = width - indent.length - 2;
+
+    const content = type === 'request' ? data.prompt : data.response;
+    const length = typeof data.promptLength === 'number' ? data.promptLength : (typeof data.responseLength === 'number' ? data.responseLength : 0);
+    const truncated = data.truncated === true;
+    const duration = type === 'response' ? data.duration : undefined;
+
+    // Header
+    const header = type === 'request'
+      ? `📤 PROMPT (${length} chars${truncated ? ', truncated' : ''})`
+      : `📥 RESPONSE (${length} chars${truncated ? ', truncated' : ''}${duration ? `, ${duration}ms` : ''})`;
+    lines.push(theme.fg("dim", indent + "┌─ " + header));
+
+    // Content
+    if (typeof content === 'string') {
+      const contentLines = content.split('\n');
+      for (const contentLine of contentLines.slice(0, 20)) { // Limit to 20 lines
+        const truncatedLine = contentLine.length > contentWidth ? contentLine.slice(0, contentWidth) + "…" : contentLine;
+        lines.push(theme.fg("muted", indent + "│ " + truncatedLine));
+      }
+      if (contentLines.length > 20) {
+        lines.push(theme.fg("muted", indent + `│ ... (${contentLines.length - 20} more lines)`));
+      }
+    }
+
+    // Footer
+    lines.push(theme.fg("dim", indent + "└─" + "─".repeat(Math.min(30, contentWidth))));
+
+    return lines;
+  }
+
+  /**
    * Colorize log line based on level
    */
   private colorizeLine(
@@ -165,13 +227,13 @@ export class BackgroundLogView {
   ): string {
     switch (level) {
       case 'error':
-        return fg("error", line);
+        return theme.fg("error", line);
       case 'warn':
-        return fg("warning", line);
+        return theme.fg("warning", line);
       case 'info':
-        return fg("info", line);
+        return theme.fg("info", line);
       case 'debug':
-        return fg("muted", line);
+        return theme.fg("muted", line);
       default:
         return line;
     }

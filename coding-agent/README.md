@@ -38,6 +38,7 @@ Pi runs in four modes: interactive, print or JSON, RPC for process integration, 
   - [Prompt Templates](#prompt-templates)
   - [Skills](#skills)
   - [Extensions](#extensions)
+  - [Goal-Driven Agent](#goal-driven-agent)
   - [Themes](#themes)
   - [Pi Packages](#pi-packages)
 - [Programmatic Usage](#programmatic-usage)
@@ -318,6 +319,289 @@ export default function (pi: ExtensionAPI) {
 - ...anything you can dream up
 
 Place in `~/.pi/agent/extensions/`, `.pi/extensions/`, or a [pi package](#pi-packages) to share with others. See [docs/extensions.md](docs/extensions.md) and [examples/extensions/](examples/extensions/).
+
+### Goal-Driven Agent
+
+Goal-Driven Agent 是 Pi 的一个强大扩展，实现自主目标管理和后台任务执行。它允许用户定义长期目标，自动分解为子目标和任务，并在后台智能调度执行。
+
+#### 核心概念
+
+##### 目标 (Goal)
+
+目标是用户想要达成的长期事项。每个目标包含：
+- **维度 (Dimensions)** - 探索空间定义
+- **成功标准 (SuccessCriteria)** - 如何判断目标已完成
+- **进度 (Progress)** - 完成百分比
+
+##### 子目标 (SubGoal)
+
+将大目标分解为可管理的阶段性目标：
+- 支持依赖关系（前置子目标）
+- 权重系统（影响进度计算）
+- 状态流转：pending → ready → in_progress → completed
+
+##### 任务 (Task)
+
+具体的执行单元，支持 6 种类型：
+
+| 类型 | 用途 | 示例 |
+|------|------|------|
+| `exploration` | 信息收集 | 搜索雅思备考资料 |
+| `one_time` | 一次性执行 | 创建学习计划 |
+| `recurring` | 周期性执行 | 每日学习提醒 |
+| `interactive` | 需要用户输入 | 询问学习偏好 |
+| `monitoring` | 持续监控 | 监控考试报名开放 |
+| `event_triggered` | 事件触发 | 考试日期临近提醒 |
+
+任务状态流转：
+```
+pending → blocked → ready → in_progress → completed
+              ↑         ↓
+              └─────────┘ (依赖满足时)
+
+in_progress → waiting_user → ready → completed
+               (交互式任务)
+```
+
+##### 知识库 (Knowledge Store)
+
+自动提取和存储任务执行中的关键信息：
+- 基于目标范围的知识检索
+- 支持关键词搜索和相似度计算
+- 在后续任务的 Prompt 中注入相关背景知识
+
+#### 架构概览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Goal-Driven Extension                     │
+├─────────────────────────────────────────────────────────────┤
+│  GoalOrchestrator (10阶段工作流编排)                          │
+│    ├── ContextGatherer (信息收集)                             │
+│    ├── SubGoalPlanner (子目标拆解)                            │
+│    ├── TaskPlanner (任务生成)                                 │
+│    └── SuccessCriteriaChecker (成功标准检查)                  │
+├─────────────────────────────────────────────────────────────┤
+│  UnifiedTaskScheduler (统一任务调度)                          │
+│    ├── TaskStore / GoalStore / SubGoalStore (存储层)         │
+│    ├── KnowledgeStore (知识存储)                              │
+│    ├── TaskDependencyGraph (依赖管理)                         │
+│    └── ValueAssessor (价值评估)                               │
+├─────────────────────────────────────────────────────────────┤
+│  AgentPiBackgroundExecutor (后台执行)                         │
+│    ├── BackgroundSessionManager (会话管理)                    │
+│    └── ToolProvider (工具提供)                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 快速开始
+
+##### 创建目标
+
+```bash
+# 在 Pi 中使用命令
+/goal add 准备雅思考试，目标分数7分
+
+# 或使用 API
+const goalStore = new GoalStore();
+const goal = await goalStore.createGoal({
+  title: '准备雅思考试',
+  description: '3个月内通过雅思考试',
+  status: 'active',
+  priority: 'high',
+  successCriteria: [
+    { description: '完成备考书籍', type: 'deliverable' },
+    { description: '模拟考达到7分', type: 'condition' },
+  ],
+});
+```
+
+##### 启动调度器
+
+```typescript
+const scheduler = new UnifiedTaskScheduler(
+  taskStore, goalStore, knowledgeStore, ...
+);
+
+await scheduler.start();
+```
+
+#### 工作流程
+
+Goal-Driven Agent 采用 10 阶段工作流：
+
+```
+1. 信息收集 → 收集用户背景和偏好
+2. 子目标拆解 → 将目标分解为阶段性目标
+3. 任务生成 → 为每个子目标创建具体任务
+4. 计划确认 → 用户审查并确认计划
+5. 执行调度 → 按优先级和依赖调度任务
+6. 后台执行 → 独立会话中执行任务
+7. 知识提取 → 自动提取关键发现
+8. 价值评估 → 评估任务输出价值
+9. 进度更新 → 更新目标和子目标进度
+10. Review → 检查成功标准，判断完成
+```
+
+#### Prompt 构建机制
+
+每个任务执行时构建三层 Prompt：
+
+| 层级 | 名称 | 来源 | 内容 |
+|------|------|------|------|
+| L1 | System Prompt | `buildDefaultSystemPrompt()` | Agent 角色定义、输出格式 |
+| L2 | Knowledge Context | 知识库检索 | 历史知识、上下文 |
+| L3 | Agent Prompt | `task.execution.agentPrompt` | 具体任务内容 |
+
+**System Prompt 示例**：
+```
+You are an autonomous task execution agent running in background mode.
+
+## 输出格式要求
+
+完成任务后，请在回复末尾使用以下格式标记关键发现：
+
+\`\`\`key_findings
+- [关键发现1：简洁描述最重要的发现]
+- [关键发现2：次要发现或数据]
+\`\`\`
+```
+
+**User Prompt 构建**：
+```typescript
+// agent-pi-executor.ts: buildEnhancedPrompt()
+const parts = [];
+
+// 知识上下文（可选）
+if (knowledgeEntries?.length > 0) {
+  parts.push(`## 相关背景知识`);
+  parts.push(knowledgeEntries.map(k => `- [${k.category}] ${k.content}`));
+}
+
+// 任务内容（必选）
+parts.push(`## 任务`);
+parts.push(task.execution.agentPrompt);
+
+// 输出要求
+parts.push(`## 输出要求`);
+parts.push(`请完成以上任务，并提供清晰、结构化的结果。`);
+```
+
+#### 知识提取
+
+任务完成后自动提取知识：
+
+| 来源 | 优先级 | 数量 | importance |
+|------|--------|------|------------|
+| `key_findings` 代码块 | 高 | 最多 3 条 | 0.9 |
+| 末尾段落自动提取 | 低 | 最多 2 条 | 0.7 |
+
+**触发时机**：每次任务成功后必定调用 `extractKnowledgeFromOutput()`
+
+**提取逻辑**：
+```typescript
+// 1. 优先检测 key_findings 代码块
+if (output.match(/```key_findings\n([\s\S]*?)```/)) {
+  return 提取的 key_findings;
+}
+
+// 2. 回退：提取末尾段落
+return extractFromEndParagraphs(output);
+```
+
+#### 通知系统
+
+任务完成后发送结构化通知：
+
+```
+## ✅ 搜索备考资料 - 执行完成
+
+**子目标**: 第1个子目标 - 资料收集
+**任务类型**: 信息收集 | **优先级**: high
+
+## 📤 执行结果
+...
+
+## 📁 输出文件
+- `/Users/xxx/ielts_study_plan.md`
+
+---
+
+📈 价值评估
+- 相关度: 95%
+- 新颖度: 80%
+- 可操作性: 90%
+- **总体评分**: 88/100
+```
+
+#### 命令参考
+
+| 命令 | 描述 |
+|------|------|
+| `/goal add <desc>` | 创建新目标 |
+| `/goal list` | 列出所有目标 |
+| `/goal status` | 显示调度器状态 |
+| `/goal tasks` | 显示任务队列 |
+| `/goal info <id>` | 显示目标详情 |
+| `/goal stop` | 停止调度器 |
+| `/goal resume` | 恢复调度器 |
+| `/goal complete <id>` | 标记目标完成 |
+| `/goal abandon <id>` | 放弃目标 |
+| `/goal clear --confirm` | 清除所有数据 |
+| `/goal clear-logs` | 清除日志文件 |
+
+#### 快捷键
+
+| 快捷键 | 功能 |
+|--------|------|
+| `Alt+B` | 进入后台日志视图 |
+| `Ctrl+C` | 停止日志跟踪（在日志视图中） |
+| `q` | 退出日志视图 |
+
+#### 配置
+
+配置文件位置：`~/.pi/agent/goal-driven/config.json`
+
+```json
+{
+  "maxConcurrentTasks": 3,
+  "schedulerCycleIntervalMs": 60000,
+  "taskDefaultTimeoutMs": 600000,
+  "taskHeartbeatTimeoutMs": 120000,
+  "llmLogMode": "standard",
+  "uiLogLevel": "info"
+}
+```
+
+#### 存储结构
+
+```
+~/.pi/agent/goal-driven/
+├── goals/
+│   └── goals.json              # 目标定义
+├── tasks/
+│   └── {goalId}/
+│       └── tasks.json          # 任务列表
+├── sub-goals/
+│   └── sub-goals.json          # 子目标定义
+├── knowledge/
+│   └── global.jsonl            # 知识条目（追加式）
+├── config.json                 # 配置文件
+└── logs/
+    └── goal-driven-{date}.log  # 日志文件
+```
+
+#### API 参考
+
+详细 API 文档见项目 [CLAUDE.md](./CLAUDE.md)。
+
+主要接口：
+- `TaskStore` - 任务 CRUD、状态管理
+- `GoalStore` - 目标和维度管理
+- `SubGoalStore` - 子目标生命周期
+- `KnowledgeStore` - 知识存储和检索
+- `UnifiedTaskScheduler` - 任务调度
+- `GoalOrchestrator` - 工作流编排
 
 ### Themes
 

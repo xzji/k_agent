@@ -80,7 +80,7 @@ import {
 import { AgentPiBackgroundExecutor } from "./runtime/agent-pi-executor.js";
 import { initToolProvider } from "./runtime/tool-provider.js";
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 
 // Background log view imports
@@ -152,9 +152,12 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     tasksCompleted: number;
     tasksFailed: number;
     status: 'active' | 'paused' | 'completed' | 'gathering_info' | 'planning';
+    runningTaskTitles: string[];
+    runningTaskIndex: number;
   }
   let currentWidgetData: GoalStatusWidgetData | null = null;
   let savedContext: ExtensionCommandContext | null = null;
+  let carouselTimer: ReturnType<typeof setInterval> | null = null;
 
   // ── Initialization state ──
   let initialized = false;
@@ -508,7 +511,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       return;
     }
 
-    const { goalTitle, progress, tasksRunning, tasksPending, tasksFailed, status } = currentWidgetData;
+    const { goalTitle, progress, tasksRunning, tasksPending, tasksFailed, status, runningTaskTitles, runningTaskIndex } = currentWidgetData;
 
     // Status icon
     const statusIcon: Record<string, string> = {
@@ -531,14 +534,27 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       `进度: ${progress}%`,
     ];
 
-    if (tasksRunning > 0) {
+    // Carousel logic for running task titles
+    if (runningTaskTitles.length > 0) {
+      const taskCount = runningTaskTitles.length;
+      const displayCount = taskCount === 1 ? '1个' : `${taskCount}个`;
+
+      // Calculate carousel index: cycle through task titles
+      const safeIndex = runningTaskTitles.length > 0
+        ? runningTaskIndex % runningTaskTitles.length
+        : 0;
+      const currentTaskTitle = runningTaskTitles[safeIndex]?.slice(0, 12) || '';
+
+      parts.push(`[${currentTaskTitle}] ${displayCount}任务运行中`);
+    } else if (tasksRunning > 0) {
+      // Fallback: no titles but still running (shouldn't happen normally)
       parts.push(`${tasksRunning}运行`);
     }
     if (tasksPending > 0) {
       parts.push(`${tasksPending}等待`);
     }
     if (tasksFailed > 0) {
-      parts.push(`❌${tasksFailed}`);
+      parts.push(`失败${tasksFailed}`);
     }
 
     // Add shortcut hint (alt+b for background logs)
@@ -575,6 +591,17 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         ? Math.round((stats.completed / effectiveTotal) * 100)
         : 0;
 
+      // Get running task titles
+      const goalTasks = await taskStore.getTasksByGoal(goal.id);
+      const inProgressTasks = goalTasks.filter(t => t.status === 'in_progress');
+      const runningTaskTitles = inProgressTasks.map(t => t.title);
+
+      // Carousel: increment index if there are multiple running tasks
+      const prevIndex = currentWidgetData?.runningTaskIndex ?? 0;
+      const newIndex = runningTaskTitles.length > 1
+        ? (prevIndex + 1) % runningTaskTitles.length
+        : 0;
+
       currentWidgetData = {
         goalId: goal.id,
         goalTitle: goal.title,
@@ -584,6 +611,8 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         tasksCompleted: stats.completed,
         tasksFailed: stats.failed,
         status: goal.status as GoalStatusWidgetData['status'],
+        runningTaskTitles,
+        runningTaskIndex: newIndex,
       };
     }
 
@@ -740,6 +769,26 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     // Refresh status widget
     await refreshStatusWidget();
   });
+
+  // Start carousel timer for rotating running task titles (every 3 seconds)
+  function startCarouselTimer(): void {
+    if (carouselTimer) return; // Already running
+
+    carouselTimer = setInterval(async () => {
+      if (!currentWidgetData || currentWidgetData.runningTaskTitles.length <= 1) return;
+
+      // Increment carousel index
+      currentWidgetData.runningTaskIndex = (currentWidgetData.runningTaskIndex + 1) % currentWidgetData.runningTaskTitles.length;
+
+      // Re-render widget
+      if (savedContext) {
+        updateStatusWidget(savedContext);
+      }
+    }, 3000);
+  }
+
+  // Start carousel when extension is ready
+  startCarouselTimer();
 
   // ── /goal command ──
   pi.registerCommand("goal", {
@@ -1578,30 +1627,42 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             fs.writeFileSync(logPath, header);
           }
 
-          // 6. ★ 使用 script 命令创建独立伪终端
-          // script 会创建新的 pty，less 在其中运行，Ctrl+C 信号只发送到新的进程组
-          // 这完全隔离了信号，不需要手动处理 SIGINT
+          // 6. ★ 使用 async spawn + SIGINT handler
+          // event loop 运行中，SIGINT handler 一定能触发
+          // less 直接运行，不经过任何包装，文件轮询正常工作
           //
-          // 默认进入浏览模式（可自由滚动），按 Shift+F 进入跟踪模式
-          try {
-            spawnSync("script", [
-              "-q",           // 静默模式，不记录 session 日志
-              "/dev/null",    // 输出到 /dev/null（我们只想要 pty 隔离）
-              "less",
-              "-P", "📋 后台日志视图 | Shift+F 跟踪 | q 退出返回前台",
-              "+G",           // 跳到文件末尾（但不进入跟踪模式）
-              logPath
-            ], {
-              stdio: "inherit",
-            });
-          } catch {
-            // Silently fail - user will see error in UI
-          } finally {
-            // 7. Restart Pi TUI
+          // 默认进入跟踪模式，按 Ctrl+C 可停止跟踪进入浏览模式
+
+          // 6.1 注册 SIGINT handler（保护 Pi 不被杀死）
+          const ignoreSigint = () => {};
+          process.on("SIGINT", ignoreSigint);
+
+          // 6.2 使用 async spawn（不用 detached，让 less 和 Pi 在同一进程组）
+          const child = spawn("less", [
+            "-P", "📋 后台日志视图 | Ctrl+C 停止跟踪 | q 退出返回前台",
+            "+F",
+            logPath
+          ], {
+            stdio: "inherit",
+            env: { ...process.env, TERM: process.env.TERM || "xterm-256color" },
+          });
+
+          // 6.3 清理函数
+          const cleanup = () => {
+            process.removeListener("SIGINT", ignoreSigint);
             tui.start();
             tui.requestRender(true);
             done();
-          }
+          };
+
+          // 6.4 监听子进程退出
+          child.on("close", cleanup);
+
+          // 6.5 处理子进程错误
+          child.on("error", (err) => {
+            console.error("less error:", err);
+            cleanup();
+          });
 
           return { render: () => [], invalidate: () => {} };
         });

@@ -83,7 +83,7 @@ export class GoalDrivenLogger {
 
     // 写入启动标记
     await this.writeEntry({
-      timestamp: new Date().toISOString(),
+      timestamp: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
       level: 'info',
       category: 'system_action',
       message: 'Goal-Driven Logger initialized',
@@ -303,7 +303,7 @@ export class GoalDrivenLogger {
     }
 
     const entry: LogEntry = {
-      timestamp: new Date().toISOString(),
+      timestamp: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
       level,
       category,
       message,
@@ -334,6 +334,11 @@ export class GoalDrivenLogger {
       const suffix = goalId ? ` (goal: ${goalId.slice(0, 8)})` : '';
       const formatted = `${prefix}${suffix} ${message}`;
 
+      // 系统操作日志添加分隔线
+      if (category === 'system_action') {
+        console.log('\x1b[90m' + '─'.repeat(60) + '\x1b[0m');
+      }
+
       switch (level) {
         case 'debug':
           console.log(`\x1b[36m${formatted}\x1b[0m`); // 青色
@@ -347,6 +352,11 @@ export class GoalDrivenLogger {
         case 'error':
           console.error(`\x1b[31m${formatted}\x1b[0m`); // 红色
           break;
+      }
+
+      // 系统操作日志添加分隔线
+      if (category === 'system_action') {
+        console.log('\x1b[90m' + '─'.repeat(60) + '\x1b[0m');
       }
     }
   }
