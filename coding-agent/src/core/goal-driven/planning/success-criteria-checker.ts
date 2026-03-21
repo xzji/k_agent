@@ -22,6 +22,7 @@ import {
   type INotificationQueue,
 } from '../types';
 import { generateId, now } from '../utils';
+import { logError } from '../utils/logger';
 
 /**
  * LLM Channel interface for evaluations
@@ -204,8 +205,7 @@ Respond in JSON format with:
         confidence: result.confidence,
       };
     } catch (error) {
-      console.error(`[SuccessCriteriaChecker] Error evaluating criterion ${criterion.id}:`, error);
-
+      await logError(error instanceof Error ? error : String(error), 'criterion_evaluation', goal.id);
       // Return conservative evaluation on error
       return {
         criterionId: criterion.id,
@@ -562,8 +562,7 @@ Respond with JSON:
 
       return result;
     } catch (error) {
-      console.error('[SuccessCriteriaChecker] Error analyzing feedback:', error);
-
+      await logError(error instanceof Error ? error : String(error), 'feedback_analysis', goal.id);
       // Fallback: create a generic follow-up task
       return {
         missingAspects: ['Additional work needed based on user feedback'],

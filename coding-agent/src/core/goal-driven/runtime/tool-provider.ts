@@ -55,6 +55,7 @@ export class ToolProvider {
       { name: "grep", description: "内容搜索", category: "code" },
       { name: "bash", description: "命令行", category: "system" },
       { name: "Agent", description: "启动子代理", category: "system" },
+      { name: "ask_user", description: "向用户提问并等待回复", category: "system" },
     ];
   }
 

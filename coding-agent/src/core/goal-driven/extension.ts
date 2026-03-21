@@ -22,12 +22,13 @@
  * - /goal complete <id>     — Mark goal as completed (supports truncated ID)
  * - /goal abandon <id>      — Abandon a goal (supports truncated ID)
  * - /goal clear --confirm   — Clear all data
+ * - /goal clear-logs        — Clear background session logs
  */
 
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionFactory, ExtensionCommandContext } from "../extensions/types.js";
 import { getAgentDir } from "../../config.js";
-import { Key } from "@mariozechner/pi-tui";
+import { Key, Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 
 // New architecture imports
 import {
@@ -100,6 +101,9 @@ import { sleep } from "./utils/index.js";
 // Logger instance
 let logger: GoalDrivenLogger | null = null;
 
+// Theme imports for custom message rendering
+import { theme, getMarkdownTheme } from "../../modes/interactive/theme/theme.js";
+
 const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // ── Data directory ──
   const dataDir = join(getAgentDir(), "goal-driven");
@@ -146,6 +150,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     tasksRunning: number;
     tasksPending: number;
     tasksCompleted: number;
+    tasksFailed: number;
     status: 'active' | 'paused' | 'completed' | 'gathering_info' | 'planning';
   }
   let currentWidgetData: GoalStatusWidgetData | null = null;
@@ -181,6 +186,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         consoleOutput: false, // 禁用控制台输出，避免破坏 TUI
         minLevel: 'debug',
         llmLogMode: config.llmLogMode,
+        eventBus: pi.events, // 发送日志到后台视图
       });
       await logger.init();
       setGlobalLogger(logger);
@@ -424,6 +430,16 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return { action: "continue" as const };
         }
 
+        // 立即显示用户回复（在 handler 处理之前）
+        // 这样用户输入后会立即看到自己的回复，而不是等待后台处理完成
+        if (userResponse.trim()) {
+          pi.sendMessage({
+            customType: "user_response",
+            content: userResponse,
+            display: true,
+          });
+        }
+
         // Route to appropriate handler based on phase
         let result: HandlerResult;
 
@@ -492,7 +508,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       return;
     }
 
-    const { goalTitle, progress, tasksRunning, tasksPending, status } = currentWidgetData;
+    const { goalTitle, progress, tasksRunning, tasksPending, tasksFailed, status } = currentWidgetData;
 
     // Status icon
     const statusIcon: Record<string, string> = {
@@ -521,6 +537,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     if (tasksPending > 0) {
       parts.push(`${tasksPending}等待`);
     }
+    if (tasksFailed > 0) {
+      parts.push(`❌${tasksFailed}`);
+    }
 
     // Add shortcut hint (alt+b for background logs)
     parts.push('⌥B日志');
@@ -547,15 +566,23 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     } else {
       // Take the first active goal
       const goal = activeGoals[0];
-      const tasks = await taskStore.getTasksByGoal(goal.id);
+      const stats = await taskStore.getTaskStatsByGoal(goal.id);
+
+      // Calculate progress based on task completion
+      // Formula: completed / (total - cancelled) * 100
+      const effectiveTotal = stats.total - stats.cancelled;
+      const progressPercentage = effectiveTotal > 0
+        ? Math.round((stats.completed / effectiveTotal) * 100)
+        : 0;
 
       currentWidgetData = {
         goalId: goal.id,
         goalTitle: goal.title,
-        progress: goal.progress?.percentage ?? 0,
-        tasksRunning: tasks.filter(t => t.status === 'in_progress').length,
-        tasksPending: tasks.filter(t => t.status === 'ready' || t.status === 'pending').length,
-        tasksCompleted: tasks.filter(t => t.status === 'completed').length,
+        progress: progressPercentage,
+        tasksRunning: stats.inProgress,
+        tasksPending: stats.pending + stats.ready + stats.blocked + stats.waitingUser,
+        tasksCompleted: stats.completed,
+        tasksFailed: stats.failed,
         status: goal.status as GoalStatusWidgetData['status'],
       };
     }
@@ -651,6 +678,41 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
     },
   );
 
+  // ── User Response renderer registration ──
+  // 使用 userMessageBg 背景颜色（与通知的 customMessageBg 不同）
+  pi.registerMessageRenderer<{ content: string }>(
+    "user_response",
+    (message, _options, _theme) => {
+      try {
+        const container = new Container();
+        container.addChild(new Spacer(1));
+
+        // 使用 userMessageBg 背景颜色（与 customMessageBg 不同）
+        // 注意：使用 _theme 参数（Pi 传入的 theme）
+        const box = new Box(1, 1, (t) => _theme.bg("userMessageBg", t));
+
+        // 添加标签
+        const label = _theme.fg("accent", "💬 用户回复");
+        box.addChild(new Text(label, 0, 0));
+        box.addChild(new Spacer(1));
+
+        // 添加内容 - 使用默认 Markdown 渲染
+        box.addChild(
+          new Markdown(message.content, 0, 0, undefined, {
+            color: (text: string) => _theme.fg("userMessageText", text),
+          })
+        );
+
+        container.addChild(box);
+        return container;
+      } catch (error) {
+        // 如果渲染失败，返回 undefined 使用默认渲染
+        console.error("user_response renderer error:", error);
+        return undefined;
+      }
+    },
+  );
+
   // ── Session Events: Initialize and update status widget ──
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
@@ -664,8 +726,8 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
       // Refresh status widget
       await refreshStatusWidget();
-    } catch (error) {
-      console.error('[GoalDriven] Failed to initialize on session_start:', error);
+    } catch {
+      // Silently fail - initialization errors are logged elsewhere
     }
   });
 
@@ -942,6 +1004,23 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           return;
         }
 
+        case "clear-logs": {
+          // Clear memory buffer
+          const bufferSize = logBuffer?.size() ?? 0;
+          logBuffer?.clear();
+
+          // Clear log file
+          const freedBytes = logPersister?.clear() ?? 0;
+
+          if (freedBytes >= 0) {
+            const freedKB = (freedBytes / 1024).toFixed(1);
+            ctx.ui.notify(`🗑️ 已清空后台日志:\n  - 内存缓冲: ${bufferSize} 条\n  - 日志文件: ${freedKB} KB`, "info");
+          } else {
+            ctx.ui.notify(`🗑️ 已清空后台日志（内存: ${bufferSize} 条），但清空日志文件失败`, "warning");
+          }
+          return;
+        }
+
         case "info": {
           const inputId = rest.trim();
           if (!inputId) {
@@ -1076,6 +1155,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             "  /goal stop            — 停止调度器\n" +
             "  /goal resume          — 恢复调度器\n" +
             "  /goal logs [日期]     — 查看日志\n" +
+            "  /goal clear-logs      — 清空后台日志\n" +
             "  /goal clear --confirm — 清空所有数据\n\n" +
             "新架构特性:\n" +
             "  - 统一任务调度器\n" +
@@ -1416,8 +1496,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           subscribeToLogs
         );
 
-        // Get the component handle
+        // Get the component handle (pass tui for real-time updates)
         const handle = view.createHandle(
+          tui,
           theme,
           () => {
             isBackgroundViewOpen = false;
@@ -1513,8 +1594,8 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
             ], {
               stdio: "inherit",
             });
-          } catch (error) {
-            console.error("Failed to open log viewer:", error);
+          } catch {
+            // Silently fail - user will see error in UI
           } finally {
             // 7. Restart Pi TUI
             tui.start();

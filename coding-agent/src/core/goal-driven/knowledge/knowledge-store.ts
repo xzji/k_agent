@@ -73,8 +73,8 @@ export class KnowledgeStore implements IKnowledgeStore {
           if (!entry.deletedAt) {
             this.cache.set(entry.id, entry);
           }
-        } catch (e) {
-          console.warn('[KnowledgeStore] Failed to parse entry:', line.slice(0, 100));
+        } catch {
+          // Skip malformed entries
         }
       }
 

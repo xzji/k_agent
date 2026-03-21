@@ -33,8 +33,8 @@ export class GoalDrivenConfigStore {
         const data = readFileSync(this.configPath, "utf-8");
         const loaded = JSON.parse(data);
         this.config = { ...DEFAULT_GOAL_DRIVEN_CONFIG, ...loaded };
-      } catch (error) {
-        console.error("[GoalDrivenConfig] Failed to load config:", error);
+      } catch {
+        // Config file doesn't exist or is invalid, use defaults
       }
     } else {
       // Create default config

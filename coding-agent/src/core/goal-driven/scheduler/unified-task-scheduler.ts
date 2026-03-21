@@ -27,6 +27,7 @@ import {
 import { TaskDependencyGraph } from '../task/task-dependency';
 import { ValueAssessor, type ValueAssessment } from '../output-layer/value-assessor';
 import { Semaphore, getPriorityWeight, now, sleep } from '../utils';
+import { logError } from '../utils/logger';
 import type { AgentPiBackgroundExecutor, TaskResultEvent } from '../runtime/agent-pi-executor';
 import type { EventBus } from '../../event-bus.js';
 import type { GoalDrivenConfigStore } from '../config/store.js';
@@ -241,8 +242,8 @@ export class UnifiedTaskScheduler {
     if (!this.running) return;
 
     this.loopTimer = setTimeout(() => {
-      this.runCycle().catch((error) => {
-        console.error('[Scheduler] Cycle error:', error);
+      this.runCycle().catch(() => {
+        // Cycle errors are logged elsewhere
       });
     }, delayMs);
   }
@@ -289,7 +290,7 @@ export class UnifiedTaskScheduler {
       this.stats.lastCycleAt = cycleStart;
 
     } catch (error) {
-      console.error('[Scheduler] Error in cycle:', error);
+      await logError(error instanceof Error ? error : String(error), 'scheduler_cycle');
     }
 
     // 7. Schedule next cycle
@@ -600,13 +601,13 @@ export class UnifiedTaskScheduler {
       }
 
     } catch (error) {
-      console.error(`[Scheduler] Task ${unifiedTask.id} failed:`, error);
       this.stats.tasksFailed++;
+      await logError(error instanceof Error ? error : String(error), 'task_execution', unifiedTask.goalId, unifiedTask.taskRef?.id);
 
       // Update task status to failed
       if (unifiedTask.taskRef) {
         await this.taskStore.updateStatus(unifiedTask.taskRef.id, 'failed', {
-          error: error instanceof Error ? error.message : String(error),
+          error: 'Execution failed',
         });
       }
     }
@@ -720,7 +721,6 @@ export class UnifiedTaskScheduler {
       // Get the task
       const task = await this.taskStore.getTask(taskId);
       if (!task) {
-        console.warn(`[Scheduler] Task ${taskId} not found`);
         return;
       }
 
@@ -770,8 +770,8 @@ export class UnifiedTaskScheduler {
       // Update dependency graph
       await this.dependencyGraph.updateAllTaskStatuses(goalId);
 
-    } catch (err) {
-      console.error(`[Scheduler] Error handling task result for ${taskId}:`, err);
+    } catch (error) {
+      await logError(error instanceof Error ? error : String(error), 'task_result_handling', goalId, taskId);
     }
   }
 
@@ -1014,7 +1014,7 @@ Please ensure this execution provides fresh insights and varies from previous ru
         // User not idle - could implement delayed notification queue here
       }
     } catch (error) {
-      console.error(`[Scheduler] Error assessing value for task ${task.id}:`, error);
+      await logError(error instanceof Error ? error : String(error), 'assess_and_notify', task.goalId, task.id);
       // Fallback to simple notification
       this.enqueueResultNotification(task, result);
     }

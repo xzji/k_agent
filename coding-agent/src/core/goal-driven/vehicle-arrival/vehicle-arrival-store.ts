@@ -53,7 +53,7 @@ export class VehicleArrivalStore {
       // 加载预警记录
       await this.loadAlerts();
     } catch (error) {
-      console.error('[VehicleArrivalStore] 初始化失败:', error);
+      // Re-throw initialization errors
       throw error;
     }
   }

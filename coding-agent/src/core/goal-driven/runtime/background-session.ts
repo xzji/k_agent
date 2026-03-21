@@ -23,9 +23,114 @@ import type { ResourceLoader } from "../resource-loader.js";
 import type { ExecutionResult, KnowledgeEntry, TaskType } from "../types.js";
 import type { UILogger } from "./ui-logger.js";
 import type { LogCategory } from "./log-message-types.js";
+import type { UILogLevel } from "./log-message-types.js";
 import { now, generateId } from "../utils/index.js";
 import { logError, logSystemAction } from "../utils/logger.js";
 import { SessionLogWriter } from "./session-log-writer.js";
+
+/**
+ * Console 输出拦截器
+ * 在后台会话执行期间，将 console 输出重定向到 UILogger
+ *
+ * 用于抑制外部扩展（如 websearch）的 console.error 输出，
+ * 防止这些输出破坏 TUI 渲染
+ */
+class ConsoleInterceptor {
+  private originalConsole: {
+    log: typeof console.log;
+    info: typeof console.info;
+    warn: typeof console.warn;
+    error: typeof console.error;
+    debug: typeof console.debug;
+  };
+  private uiLogger: UILogger | null;
+  private sessionId: string;
+  private active: boolean = false;
+
+  constructor(uiLogger: UILogger | null, sessionId: string) {
+    this.uiLogger = uiLogger;
+    this.sessionId = sessionId;
+    this.originalConsole = {
+      log: console.log.bind(console),
+      info: console.info.bind(console),
+      warn: console.warn.bind(console),
+      error: console.error.bind(console),
+      debug: console.debug.bind(console),
+    };
+  }
+
+  /**
+   * 开始拦截 console 输出
+   */
+  start(): void {
+    if (this.active) return;
+    this.active = true;
+
+    console.log = (...args) => this.redirect('info', 'Console', args);
+    console.info = (...args) => this.redirect('info', 'Console', args);
+    console.warn = (...args) => this.redirect('warn', 'Console', args);
+    console.error = (...args) => this.redirect('error', 'Console', args);
+    console.debug = (...args) => this.redirect('debug', 'Console', args);
+  }
+
+  /**
+   * 停止拦截，恢复原始 console
+   */
+  stop(): void {
+    if (!this.active) return;
+    this.active = false;
+
+    console.log = this.originalConsole.log;
+    console.info = this.originalConsole.info;
+    console.warn = this.originalConsole.warn;
+    console.error = this.originalConsole.error;
+    console.debug = this.originalConsole.debug;
+  }
+
+  /**
+   * 重定向 console 输出到 UILogger
+   */
+  private redirect(level: UILogLevel, source: string, args: unknown[]): void {
+    const message = args.map(arg => {
+      if (arg instanceof Error) {
+        // 错误对象：只记录消息，不记录完整堆栈
+        return `${arg.name}: ${arg.message}`;
+      }
+      if (typeof arg === 'object') {
+        try {
+          return JSON.stringify(arg, null, 2);
+        } catch {
+          return String(arg);
+        }
+      }
+      return String(arg);
+    }).join(' ');
+
+    if (this.uiLogger) {
+      this.uiLogger.log(level, source, message);
+    }
+    // 不输出到原始 console，避免前台显示
+  }
+}
+
+/**
+ * 从 Anthropic 格式的 content 中提取文本
+ * 支持: string | ContentBlock[] | undefined
+ */
+function extractTextContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter((block): block is { type: 'text'; text: string } =>
+        block?.type === 'text' && typeof block.text === 'string'
+      )
+      .map(block => block.text)
+      .join('\n');
+  }
+  return '';
+}
 
 /**
  * 后台会话配置
@@ -126,6 +231,18 @@ interface RunningSession {
   abortController: AbortController;
   eventListeners: Array<(event: BackgroundSessionEvent) => void>;
   heartbeatTimer?: ReturnType<typeof setInterval>;
+  consoleInterceptor?: ConsoleInterceptor;
+}
+
+/**
+ * Pending ask_user request
+ */
+interface PendingAskUserRequest {
+  sessionId: string;
+  toolCallId: string;
+  question: string;
+  resolve: (response: string) => void;
+  reject: (error: Error) => void;
 }
 
 /**
@@ -141,6 +258,8 @@ export class BackgroundSessionManager {
   private messageBuffers = new Map<string, string>();
   private sessionTurnIndex = new Map<string, number>();
   private uiLogger?: UILogger;
+  // Pending ask_user requests - maps toolCallId to pending request
+  private pendingAskUserRequests = new Map<string, PendingAskUserRequest>();
 
   constructor(
     private modelRegistry: ModelRegistry,
@@ -328,6 +447,12 @@ export class BackgroundSessionManager {
     }, heartbeatIntervalMs);
     runningSession.heartbeatTimer = heartbeatTimer;
 
+    // 创建并启动 console 拦截器
+    // 将外部扩展的 console 输出重定向到后台日志，避免破坏 TUI 渲染
+    const consoleInterceptor = new ConsoleInterceptor(this.uiLogger ?? null, handle.id);
+    consoleInterceptor.start();
+    runningSession.consoleInterceptor = consoleInterceptor;
+
     // 设置输出监听
     if (options?.onOutput) {
       const outputHandler = (event: BackgroundSessionEvent) => {
@@ -367,6 +492,11 @@ export class BackgroundSessionManager {
         clearTimeout(timeoutTimer);
         this.eventListeners = this.eventListeners.filter((l) => l !== completionHandler);
         runningSession.handle.isRunning = false;
+        // 停止 console 拦截器，恢复原始 console
+        if (runningSession.consoleInterceptor) {
+          runningSession.consoleInterceptor.stop();
+          runningSession.consoleInterceptor = undefined;
+        }
       };
 
       this.eventListeners.push(completionHandler);
@@ -401,6 +531,12 @@ export class BackgroundSessionManager {
     if (runningSession.heartbeatTimer) {
       clearInterval(runningSession.heartbeatTimer);
       runningSession.heartbeatTimer = undefined;
+    }
+
+    // 停止 console 拦截器
+    if (runningSession.consoleInterceptor) {
+      runningSession.consoleInterceptor.stop();
+      runningSession.consoleInterceptor = undefined;
     }
 
     // 中止执行
@@ -594,8 +730,9 @@ export class BackgroundSessionManager {
         }
 
         case "turn_start": {
-          // 实时输出回合开始
-          this.log('debug', 'TurnEvent', `Turn ${turnIndex} 开始, sessionId: ${sessionId}`);
+          // 输出回合分隔线
+          this.log('info', 'TurnEvent', `───────────────── Turn ${turnIndex} ─────────────────`);
+          this.log('debug', 'TurnEvent', `sessionId: ${sessionId}`);
           // 记录日志
           this.sessionLogWriter.addEntry(sessionId, {
             turnIndex,
@@ -608,10 +745,7 @@ export class BackgroundSessionManager {
         case "message_delta": {
           const delta = (event as any).delta;
           if (delta?.text) {
-            // 增量输出（不换行，保持流式效果）
-            process.stdout.write(delta.text);
-
-            // 累积到缓冲区
+            // 累积到缓冲区（不输出到前台，只在后台记录）
             const existing = this.messageBuffers.get(sessionId) || '';
             this.messageBuffers.set(sessionId, existing + delta.text);
           }
@@ -621,8 +755,7 @@ export class BackgroundSessionManager {
         case "content_block_delta": {
           const delta = (event as any).delta;
           if (delta?.text) {
-            process.stdout.write(delta.text);
-
+            // 累积到缓冲区（不输出到前台，只在后台记录）
             const existing = this.messageBuffers.get(sessionId) || '';
             this.messageBuffers.set(sessionId, existing + delta.text);
           }
@@ -657,8 +790,7 @@ export class BackgroundSessionManager {
               break;
 
             case "thinking_delta":
-              // 流式输出 thinking 内容
-              process.stdout.write(assistantEvent.delta);
+              // 不输出到前台，只在后台记录
               break;
 
             case "thinking_end":
@@ -670,8 +802,7 @@ export class BackgroundSessionManager {
               break;
 
             case "text_delta":
-              // 流式输出文本内容
-              process.stdout.write(assistantEvent.delta);
+              // 不输出到前台，只在后台记录
               break;
 
             case "text_end":
@@ -683,7 +814,7 @@ export class BackgroundSessionManager {
               break;
 
             case "toolcall_delta":
-              process.stdout.write(assistantEvent.delta);
+              // 不输出到前台，只在后台记录
               break;
 
             case "toolcall_end":
@@ -708,9 +839,7 @@ export class BackgroundSessionManager {
 
           // 处理用户输入（task prompt）
           if (message && message.role === "user") {
-            const content = typeof message.content === "string"
-              ? message.content
-              : JSON.stringify(message.content);
+            const content = extractTextContent(message.content);
 
             // 对长内容进行截断
             const truncatedContent = content.length > 500
@@ -731,9 +860,7 @@ export class BackgroundSessionManager {
           // 处理 assistant 和 toolResult 消息
           else if (message && (message.role === "assistant" || message.role === "toolResult")) {
             this.log('debug', 'LLMStream', `处理 ${message.role} 消息`);
-            const content = typeof message.content === "string"
-              ? message.content
-              : JSON.stringify(message.content);
+            const content = extractTextContent(message.content);
 
             // 记录消息
             if (message.role === "assistant") {
@@ -773,11 +900,19 @@ export class BackgroundSessionManager {
         case "tool_execution_start": {
           const toolName = (event as any).toolName || "unknown";
           const params = (event as any).args;
+          const toolCallId = (event as any).toolCallId || (event as any).tool?.id || generateId();
 
           // 记录工具调用
           this.log('info', 'ToolExecution', `Tool Call: ${toolName}`, {
             data: { params },
           });
+
+          // Special handling for ask_user tool
+          if (toolName === "ask_user") {
+            this.handleAskUserTool(sessionId, toolCallId, params);
+            // Don't emit the normal tool_call event for ask_user - we handle it specially
+            break;
+          }
 
           this.emitEvent({
             type: "tool_call",
@@ -981,6 +1116,68 @@ export class BackgroundSessionManager {
   }
 
   /**
+   * 处理 ask_user 工具调用
+   * 向用户显示问题并等待响应
+   */
+  private handleAskUserTool(sessionId: string, toolCallId: string, params: unknown): void {
+    const askParams = params as { question: string; context?: string; options?: string[] };
+    const question = askParams?.question || "请提供您的回复";
+    const context = askParams?.context;
+    const options = askParams?.options;
+
+    this.log('info', 'ToolExecution', `ask_user: ${question}`);
+
+    // Store pending request
+    const pendingRequest: PendingAskUserRequest = {
+      sessionId,
+      toolCallId,
+      question,
+      resolve: () => {}, // Will be replaced
+      reject: () => {},   // Will be replaced
+    };
+
+    // Create a promise that can be resolved externally
+    const promise = new Promise<string>((resolve, reject) => {
+      pendingRequest.resolve = resolve;
+      pendingRequest.reject = reject;
+    });
+
+    this.pendingAskUserRequests.set(toolCallId, pendingRequest);
+
+    // Emit event to show question in foreground
+    // The extension will listen for this and display the question to the user
+    this.emitEvent({
+      type: "tool_call",
+      sessionId,
+      toolName: "ask_user",
+      params: { question, context, options, toolCallId },
+    });
+
+    // 发送重要日志到前台显示问题
+    this.log('info', 'ActionRequired', `❓ ${question}`, {
+      taskId: this.sessions.get(sessionId)?.handle.taskId,
+      goalId: this.sessions.get(sessionId)?.handle.goalId,
+      category: 'important',
+      data: { toolCallId, context, options },
+    });
+  }
+
+  /**
+   * 处理 ask_user 工具的用户响应
+   * 由 extension.ts 在用户回复后调用
+   */
+  resolveAskUserResponse(toolCallId: string, response: string): void {
+    const pending = this.pendingAskUserRequests.get(toolCallId);
+    if (pending) {
+      this.log('info', 'ToolExecution', `ask_user resolved: ${response.slice(0, 50)}...`);
+      pending.resolve(response);
+      this.pendingAskUserRequests.delete(toolCallId);
+    } else {
+      this.log('warn', 'ToolExecution', `No pending ask_user request found for toolCallId: ${toolCallId}`);
+    }
+  }
+
+  /**
    * 构建默认系统提示词
    */
   private buildDefaultSystemPrompt(): string {
@@ -996,7 +1193,22 @@ Guidelines:
 - Be concise but thorough
 - Use tools when needed, don't rely solely on training data
 - Structure output for easy parsing
-- Indicate completion with clear status`;
+- Indicate completion with clear status
+
+## 输出格式要求
+
+完成任务后，请在回复末尾使用以下格式标记关键发现：
+
+\`\`\`key_findings
+- [关键发现1：简洁描述最重要的发现]
+- [关键发现2：次要发现或数据]
+- [关键发现3：其他重要信息]
+\`\`\`
+
+注意：
+- 每条发现控制在一句话内（不超过100字）
+- 只标记对用户有价值的信息，跳过过程性描述
+- 如果没有重要发现，可以省略此部分`;
   }
 }
 

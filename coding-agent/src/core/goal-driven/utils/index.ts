@@ -218,8 +218,8 @@ export class EventEmitter {
       callbacks.forEach((cb) => {
         try {
           cb(...args);
-        } catch (error) {
-          console.error(`Error in event listener for ${event}:`, error);
+        } catch {
+          // Silently ignore errors in event listeners
         }
       });
     }

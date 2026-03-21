@@ -2,6 +2,214 @@
 
 ---
 
+## GoalDrivenLogger 日志切换后台修复 - 实现记录
+
+**实现日期**: 2026-03-19
+
+### 问题描述
+
+新创建目标后，大部分日志没有切换到后台，按 `alt+b` 进入后台日志视图看不到规划过程的输出。
+
+### 根因分析
+
+日志系统分叉，存在两套独立的日志机制：
+
+| 日志类 | 文件 | 输出目标 | 使用组件 |
+|--------|------|----------|----------|
+| `GoalDrivenLogger` | `utils/logger.ts` | 文件 | SubGoalPlanner, TaskPlanner, PlanPresenter, ContextGatherer, SuccessCriteriaChecker |
+| `UILogger` | `runtime/ui-logger.ts` | EventBus → 后台日志视图 | BackgroundSessionManager, AgentPiExecutor |
+
+**问题所在**: 目标创建流程中的规划组件只使用 `GoalDrivenLogger`，不发送 `goal_driven:background_log` 事件，因此日志不会出现在后台日志视图中。
+
+### 解决方案
+
+让 `GoalDrivenLogger` 在记录日志时，同时发送事件到后台日志视图。
+
+### 修改文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| `utils/logger.ts` | 添加 `eventBus` 参数到 `LoggerOptions`，在 `log()` 方法中发送 `goal_driven:background_log` 事件 |
+| `extension.ts` | 初始化 logger 时传入 `pi.events` |
+
+### 代码变更
+
+```typescript
+// utils/logger.ts - LoggerOptions 接口
+interface LoggerOptions {
+  // ... 其他字段
+  eventBus?: { emit: (type: string, payload: unknown) => void }; // 事件总线
+}
+
+// GoalDrivenLogger 类
+export class GoalDrivenLogger {
+  private eventBus?: { emit: (type: string, payload: unknown) => void };
+
+  constructor(options: LoggerOptions) {
+    // ...
+    this.eventBus = options.eventBus;
+  }
+
+  private async log(...) {
+    // ... 写入文件 ...
+
+    // 发送事件到后台日志视图
+    if (this.eventBus) {
+      this.eventBus.emit("goal_driven:background_log", {
+        level,
+        source: category,
+        message,
+        timestamp: Date.now(),
+        goalId,
+        taskId,
+        data,
+        category: level === 'error' || level === 'warn' ? 'important' : 'normal',
+      });
+    }
+  }
+}
+
+// extension.ts - 初始化
+logger = new GoalDrivenLogger({
+  logDir,
+  maxDays: 7,
+  consoleOutput: false,
+  minLevel: 'debug',
+  llmLogMode: config.llmLogMode,
+  eventBus: pi.events, // 发送日志到后台视图
+});
+```
+
+### 预期效果
+
+修改后，所有通过 `GoalDrivenLogger` 记录的日志都会：
+1. 写入文件（现有行为）
+2. 发送 `goal_driven:background_log` 事件（新增）
+3. 出现在后台日志视图（新增）
+4. 如果后台视图打开，实时更新显示（通过 `logCallbacks`）
+
+### 验证结果
+
+- 单元测试: 20/20 通过 ✅
+- TypeScript 编译: 通过 ✅
+
+---
+
+## 前台消息格式化修复 - 实现记录
+
+**实现日期**: 2026-03-19
+
+### 问题描述
+
+前台通知信息显示为 JSON 格式，用户无法理解：
+```
+📋 发现关键信息：[{"type":"text","text":"我理解您希望执行一次完整的TPO...
+```
+
+### 根因分析
+
+`background-session.ts` 处理消息时，直接使用 `JSON.stringify()` 序列化 Anthropic 格式的内容数组：
+
+```typescript
+const content = typeof message.content === "string"
+  ? message.content
+  : JSON.stringify(message.content);  // ❌ 导致 JSON 显示
+```
+
+Agent 发送的消息格式：
+```typescript
+message.content = [{type: "text", text: "我理解您希望..."}]
+```
+
+### 解决方案
+
+添加 `extractTextContent` 函数，正确提取文本内容：
+
+```typescript
+function extractTextContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(block => block?.type === 'text')
+      .map(block => block.text)
+      .join('\n');
+  }
+  return '';
+}
+```
+
+### 修改文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| `runtime/background-session.ts` | 添加 `extractTextContent` 函数，替换 2 处 `JSON.stringify` |
+
+### 验证结果
+
+- 前台显示用户友好的文本 ✅
+- 多段文本正确合并 ✅
+- TypeScript 编译通过 ✅
+
+---
+
+## 后台任务 Agent 输出隔离修复 - 实现记录
+
+**实现日期**: 2026-03-19
+
+### 问题描述
+
+后台任务执行时，Agent 的回复内容（如 "## 📋 理解任务"）直接输出到前台终端，破坏 TUI 渲染并干扰用户交互。
+
+### 根因分析
+
+`background-session.ts` 中的事件监听器直接使用 `process.stdout.write` 输出 Agent 的思考过程和回复内容：
+
+```typescript
+case "message_delta":
+  process.stdout.write(delta.text);  // ❌ 直接输出到前台
+
+case "thinking_delta":
+  process.stdout.write(assistantEvent.delta);  // ❌ 直接输出到前台
+
+case "text_delta":
+  process.stdout.write(assistantEvent.delta);  // ❌ 直接输出到前台
+```
+
+### 解决方案
+
+移除所有 `process.stdout.write` 调用，Agent 输出内容仅：
+1. 累积到 `messageBuffers` 缓冲区
+2. 记录到 `sessionLogWriter`（已实现）
+3. 通过 `UILogger` 记录到后台日志（已实现）
+
+### 修改文件
+
+| 文件 | 修改内容 |
+|------|----------|
+| `runtime/background-session.ts` | 移除 4 处 `process.stdout.write` 调用 |
+
+### 前后台展示规范
+
+**前台显示**（通过 `sendMessage`）：
+- 任务开始/完成/失败通知
+- 需要用户输入/确认的操作
+- 关键发现（KnowledgeCreated）
+- 目标完成通知
+
+**后台显示**（通过 `UILogger` + `alt+b` 查看）：
+- Agent 思考过程
+- 工具调用详情
+- 会话生命周期事件
+- 所有技术细节日志
+
+### 验证结果
+
+- 后台任务 Agent 输出不再破坏前台 TUI ✅
+- Agent 回复内容仍记录到 session 日志 ✅
+- TypeScript 编译通过 ✅
+
+---
+
 ## 后台日志视图 Ctrl+C 信号隔离修复 - 实现记录
 
 **实现日期**: 2026-03-19

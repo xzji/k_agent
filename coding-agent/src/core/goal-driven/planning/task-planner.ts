@@ -17,6 +17,7 @@ import {
   type SubGoal,
   type ISubGoalStore,
 } from '../types';
+import { logError } from '../utils/logger';
 
 /**
  * Task review result
@@ -176,8 +177,7 @@ export class TaskPlanner {
       // Try to parse JSON, handling markdown code blocks
       taskData = this.parseJSONWithMarkdown(response.content);
     } catch (error) {
-      console.error('[TaskPlanner] Failed to parse task generation response:', error);
-      console.error('[TaskPlanner] Raw response:', response.content.slice(0, 500));
+      await logError(error instanceof Error ? error : String(error), 'task_generation', subGoal.goalId, undefined, { subGoalId: subGoal.id });
       // Fallback: create default tasks
       return this.createDefaultTasks(subGoal, goalContext);
     }
@@ -354,7 +354,8 @@ export class TaskPlanner {
     try {
       reviewData = JSON.parse(response.content);
     } catch (error) {
-      console.error('[TaskPlanner] Failed to parse review response:', error);
+      const goalId = tasks[0]?.goalId;
+      await logError(error instanceof Error ? error : String(error), 'task_review', goalId);
       // Return all tasks as aligned
       return tasks.map((t) => ({
         taskId: t.id,

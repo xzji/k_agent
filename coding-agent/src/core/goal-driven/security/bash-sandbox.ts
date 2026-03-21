@@ -180,7 +180,6 @@ export async function executeInSandbox(
       });
     } else {
       // Fallback: regular execution (no sandboxing)
-      console.warn('[BashSandbox] No sandboxing available, executing directly');
       childProcess = spawn('sh', ['-c', command], {
         env: { ...process.env, ...config.env },
       });

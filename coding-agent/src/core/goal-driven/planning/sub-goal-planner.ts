@@ -16,6 +16,7 @@ import {
   type ISubGoalStore,
   type IGoalStore,
 } from '../types';
+import { logError } from '../utils/logger';
 
 /**
  * LLM Channel interface (minimal version)
@@ -143,7 +144,7 @@ export class SubGoalPlanner {
     try {
       decomposition = JSON.parse(response.content);
     } catch (error) {
-      console.error('[SubGoalPlanner] Failed to parse LLM response:', error);
+      await logError(error instanceof Error ? error : String(error), 'subgoal_decomposition', goal.id);
       // Fallback: create a simple default sub-goal
       return this.createDefaultSubGoals(goal);
     }
@@ -352,7 +353,7 @@ export class SubGoalPlanner {
     try {
       reviewData = JSON.parse(response.content);
     } catch (error) {
-      console.error('[SubGoalPlanner] Failed to parse review response:', error);
+      await logError(error instanceof Error ? error : String(error), 'subgoal_review', goalId);
       return { reviews: [], requiresUserConfirmation: false };
     }
 

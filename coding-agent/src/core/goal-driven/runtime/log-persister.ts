@@ -90,4 +90,28 @@ export class LogPersister {
   disable(): void {
     this.enabled = false;
   }
+
+  /**
+   * Clear the log file
+   *
+   * Removes all historical logs from the log file.
+   * Returns the number of bytes freed, or -1 on error.
+   */
+  clear(): number {
+    try {
+      if (!fs.existsSync(this.logPath)) {
+        return 0;
+      }
+
+      const stats = fs.statSync(this.logPath);
+      const freedBytes = stats.size;
+
+      // Truncate the file to zero length
+      fs.truncateSync(this.logPath, 0);
+
+      return freedBytes;
+    } catch {
+      return -1;
+    }
+  }
 }

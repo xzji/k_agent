@@ -1,0 +1,54 @@
+word,pos,chinese_definition,english_definition,synonyms,antonyms,context_sentence,tpo_frequency,category,level
+abundant,adj.,"丰富的，充裕的","existing or available in large quantities",plentiful;ample;copious,scarce;sparse,"The tropical rainforest has abundant biodiversity, with millions of species coexisting.",45+,A,Core
+accommodate,v.,"容纳，适应","provide lodging or sufficient space for",house;lodge;shelter,reject;refuse,"The hotel can accommodate 200 guests for the conference.",38+,A,Core
+acknowledge,v.,"承认，确认","accept or admit the existence or truth of",admit;recognize;concede,deny;reject,"She acknowledged her mistake and apologized to the team.",42+,A,Core
+acquire,v.,"获得，取得","get or gain something",obtain;gain;procure,lose;forfeit,"He acquired the rare painting at an auction in Paris.",56+,A,Core
+adapt,v.,"适应，改编","make something suitable for a new purpose",adjust;modify;tailor,reject;maintain,"Animals adapt to their environment through natural selection.",51+,A,Core
+advocate,v./n.,"提倡；支持者","publicly recommend or support",support;promote;champion,oppose;condemn,"She advocates for environmental protection policies.",33+,A,Core
+aesthetic,adj.,"美学的，审美的","concerned with beauty or appreciation of beauty",artistic;visual;tasteful,unaesthetic;ugly,"The building has great aesthetic appeal due to its modern design.",27+,A,Core
+aggregate,n./adj./v.,"总计；集合的；聚集","a whole formed by combining elements",total;combined;collective,individual;separate,"The aggregate score of the team was impressive.",29+,A,Core
+ambiguous,adj.,"模棱两可的，模糊的","open to more than one interpretation",vague;unclear;equivocal,clear;unambiguous,"His instructions were ambiguous and caused confusion.",35+,A,Core
+anticipate,v.,"预期，预料","regard as probable; expect or predict",expect;foresee;predict,dread;fear,"We anticipate strong economic growth next year.",47+,A,Core
+arbitrary,adj.,"任意的，武断的","based on random choice or personal whim",random;capricious;whimsical,reasoned;logical,"The decision seemed completely arbitrary without proper justification.",24+,A,Core
+articulate,v./adj.,"清晰表达；口齿伶俐的","express (an idea or feeling) fluently and coherently",enunciate;express;verbalize,mumble;stutter,"She articulated her ideas clearly during the presentation.",31+,A,Core
+assess,v.,"评估，评定","evaluate or estimate the nature, ability, or quality",evaluate;estimate;judge,guess;assume,"The team will assess the damage after the storm.",52+,A,Core
+assimilate,v.,"同化，吸收","take in and understand fully",absorb;incorporate;integrate,reject;exclude,"Immigrants assimilate into the local culture over time.",28+,A,Core
+attribute,v./n.,"归因于；属性","regard something as being caused by",ascribe;credit;assign,detach;remove,"We attribute his success to hard work and dedication.",39+,A,Core
+benevolent,adj.,"仁慈的，慈善的","well meaning and kindly",charitable;kind;generous,cruel;malicious,"The benevolent donor gave millions to charity.",15+,B,Advanced
+burdensome,adj.,"繁重的，难以承担的","causing difficulty or worry",heavy;oppressive;taxing,light;easy,"The new regulations proved burdensome for small businesses.",12+,B,Advanced
+contemplate,v.,"沉思，打算","look thoughtfully for a long time",consider;ponder;reflect,ignore;neglect,"She sat quietly, contemplating the meaning of life.",18+,B,Advanced
+converge,v.,"汇聚，集中","come together from different directions",meet;assemble;gather,diverge;separate,"The rivers converge near the city center.",22+,B,Advanced
+deplete,v.,"耗尽，减少","reduce the quantity of something",exhaust;consume;drain,replenish;restore,"Overfishing has depleted the ocean's fish population.",26+,B,Advanced
+derive,v.,"获得，源于","obtain something from a specified source",obtain;gain;extract,lose;forfeit,"She derives great pleasure from gardening.",29+,B,Advanced
+diverse,adj.,"多样化的，不同的","showing a great deal of variety",varied;assorted;mixed,uniform;homogeneous,"The university has a diverse student body.",48+,A,Core
+eligible,adj.,"有资格的，符合条件的","having the right to do or obtain something",qualified;entitled;suitable,ineligible;unqualified,"Only citizens over 18 are eligible to vote.",31+,A,Core
+enhance,v.,"提高，增强","improve the quality, value, or extent of",improve;augment;boost,diminish;reduce,"The new software will enhance productivity.",54+,A,Core
+explicit,adj.,"明确的，清楚的","stated clearly and in detail",clear;specific;definite,ambiguous;vague,"The instructions were explicit and easy to follow.",36+,A,Core
+eccentric,adj.,"古怪的，异乎寻常的","unconventional and slightly strange",unconventional;odd;peculiar,conventional;normal,"The scientist's eccentric behavior puzzled his colleagues.",10+,C,Extension
+ecosystem,n.,"生态系统","a biological community",ecological system,biome,"The rainforest's ecosystem is incredibly delicate.",44+,A,Core
+elaborate,v./adj.,"精心制作；复杂的","involving many careful details",detailed;intricate;complex,simple;plain,"The king ordered an elaborate palace to be built.",32+,A,Core
+eliminate,v.,"消除，排除","completely remove or get rid of",remove;eradicate;abolish,preserve;maintain,"We must eliminate all sources of pollution.",41+,A,Core
+empirical,adj.,"实证的，基于经验的","based on, concerned with, or verifiable by observation",experimental;observational;practical,theoretical;abstract,"The study provided empirical evidence for the theory.",37+,A,Core
+endemic,adj./n.,"地方性的；地方病","regularly found among particular people",local;regional,global;universal,"Malaria is endemic to tropical regions.",14+,C,Extension
+epidemic,n./adj.,"流行病；流行的","a widespread occurrence",outbreak;pandemic,isolated;localized,"The flu epidemic affected millions worldwide.",28+,A,Core
+erroneous,adj.,"错误的，不正确的","wrong; incorrect",mistaken;inaccurate;false,correct;accurate,"His erroneous conclusion led to wasted resources.",19+,B,Advanced
+evolve,v.,"进化，发展","develop gradually",develop;progress;advance,regress;stagnate,"Humans evolved from earlier primates over millions of years.",52+,A,Core
+exaggerate,v.,"夸大，夸张","represent as being larger, better, or worse than reality",overstate;magnify;embellish,understate;minimize,"The media tends to exaggerate the severity of the crisis.",25+,B,Advanced
+hypothesis,n.,"假设，假说","a proposed explanation for something",theory;proposition;assumption,fact;certainty,"The scientist formulated a hypothesis to explain the phenomenon.",43+,A,Science
+innovative,adj.,"创新的，革新的","featuring new methods; advanced and original",creative;novel;original,traditional;conventional,"The company developed an innovative solution.",46+,A,Core
+phenomenon,n.,"现象","a fact or situation that is observed to exist",event;occurrence;circumstance,impossibility;abstraction,"The aurora is a natural phenomenon visible in polar regions.",40+,A,Core
+simulate,v.,"模拟","imitate the appearance or character of",model;replicate;reproduce,original;authentic,"Computers can simulate weather patterns.",30+,A,Core
+civilization,n.,"文明","the stage of human social development",culture;society,barbarism;primitivism,"The ancient Egyptian civilization flourished for millennia.",38+,A,History
+colonial,adj.,"殖民的","relating to a colony",imperial,dependent,"Many countries gained independence from colonial rule.",27+,A,History
+democracy,n.,"民主","a system of government by the whole population",republic;self-government,dictatorship;monarchy,"Athens is considered the birthplace of democracy.",34+,A,History
+revolution,n.,"革命","a forcible overthrow of a government",uprising;rebellion,reform;peace,"The Industrial Revolution transformed society.",45+,A,History
+sovereign,adj.,"主权的，独立的","possessing supreme or ultimate power",independent;autonomous,dependent;subservient,"Each nation is sovereign and self-governing.",22+,B,Advanced
+perspective,n.,"透视法；观点","a particular attitude toward or way of regarding something",viewpoint;outlook;standpoint,"Renaissance artists developed linear perspective.",26+,A,Art
+composition,n.,"作品，构图","a work of music, art, or literature",creation;work;piece,"The composer's latest composition was performed yesterday.",29+,A,Art
+authentic,adj.,"真实的，原作的","of undisputed origin; genuine",genuine;real;true,false;fake;counterfeit,"Experts verified the painting as authentic.",31+,A,Art
+symbolic,adj.,"象征的","serving as a symbol",representative;emblematic,literal;actual,"The story's characters are symbolic of human nature.",23+,B,Advanced
+incentive,n.,"激励，动机","a thing that motivates or encourages",motivation;encouragement;stimulus,deterrent;discouragement,"Tax breaks provide an incentive for investment.",35+,A,Business
+competitive,adj.,"有竞争力的","as good as or better than others",rivalrous;contested,uncompetitive;cooperative,"The company offers competitive salaries.",48+,A,Business
+monopoly,n.,"垄断","exclusive possession or control",exclusive control,competition,"The utility company holds a legal monopoly.",19+,B,Advanced
+revenue,n.,"收入，收益","income, especially when large",income;earnings;proceeds,expenditure;expenses,"The company's annual revenue exceeded expectations.",42+,A,Business
+prosperity,n.,"繁荣，兴旺","the state of flourishing",success;wealth;abundance,poverty;adversity,"Economic prosperity improved living standards.",28+,A,Business

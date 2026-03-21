@@ -400,6 +400,36 @@ export class TaskStore implements ITaskStore {
   }
 
   /**
+   * Get task status statistics for a goal
+   * Used for progress calculation based on task completion
+   */
+  async getTaskStatsByGoal(goalId: string): Promise<{
+    total: number;
+    pending: number;
+    ready: number;
+    blocked: number;
+    inProgress: number;
+    waitingUser: number;
+    completed: number;
+    failed: number;
+    cancelled: number;
+  }> {
+    const tasks = await this.getTasksByGoal(goalId);
+
+    return {
+      total: tasks.length,
+      pending: tasks.filter(t => t.status === 'pending').length,
+      ready: tasks.filter(t => t.status === 'ready').length,
+      blocked: tasks.filter(t => t.status === 'blocked').length,
+      inProgress: tasks.filter(t => t.status === 'in_progress').length,
+      waitingUser: tasks.filter(t => t.status === 'waiting_user').length,
+      completed: tasks.filter(t => t.status === 'completed').length,
+      failed: tasks.filter(t => t.status === 'failed').length,
+      cancelled: tasks.filter(t => t.status === 'cancelled').length,
+    };
+  }
+
+  /**
    * Clear all tasks (for testing)
    */
   async clearAll(): Promise<void> {

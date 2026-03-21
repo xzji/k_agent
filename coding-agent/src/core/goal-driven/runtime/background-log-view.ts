@@ -11,6 +11,13 @@
 import type { BackgroundLogPayload } from "./log-message-types.js";
 
 /**
+ * TUI interface for requesting re-render
+ */
+interface TUI {
+  requestRender: (force?: boolean) => void;
+}
+
+/**
  * Log callback function type
  */
 type LogCallback = (log: BackgroundLogPayload) => void;
@@ -36,7 +43,7 @@ export class BackgroundLogView {
   private scrollOffset: number = 0;
   private disposed: boolean = false;
   private unsubscribe?: () => void;
-  private invalidateCallback?: () => void;
+  private tui?: TUI;
 
   constructor(
     private initialLogs: BackgroundLogPayload[],
@@ -51,21 +58,25 @@ export class BackgroundLogView {
    * Create the component handle for use with ctx.ui.custom()
    */
   createHandle(
+    tui: TUI,
     theme: { fg?: (color: string, text: string) => string; bold?: (text: string) => string; style?: (styles: string[], text: string) => string },
     done: () => void
   ): BackgroundLogViewHandle {
-    // Subscribe to new logs
-    this.unsubscribe = this.onNewLog((log) => this.addLog(log));
+    // Store TUI reference for real-time updates
+    this.tui = tui;
 
     // Helper functions for theming (with fallbacks)
     const fg = (color: string, text: string) => theme.fg?.(color, text) ?? text;
     const bold = (text: string) => theme.bold?.(text) ?? text;
     const styleFn = (styles: string[], text: string) => theme.style?.(styles, text) ?? text;
 
+    // Subscribe to new logs
+    this.unsubscribe = this.onNewLog((log) => this.addLog(log));
+
     return {
       render: (width: number, height: number) => this.render(width, height, { fg, bold, style: styleFn }),
       invalidate: () => {
-        this.invalidateCallback?.();
+        // Triggered by TUI framework when re-render is needed
       },
       handleInput: (data: string) => this.handleInput(data, done),
       dispose: () => this.dispose(),
@@ -81,8 +92,10 @@ export class BackgroundLogView {
     this.logs.push(log);
 
     // Auto-scroll to bottom if user is at the bottom
+    // Always request re-render to show new logs
     if (this.scrollOffset === 0) {
-      this.invalidateCallback?.();
+      // Request TUI to re-render
+      this.tui?.requestRender();
     }
   }
 

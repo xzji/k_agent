@@ -174,6 +174,162 @@ describe('TaskStore', () => {
     expect(updated?.executionHistory).toHaveLength(1);
     expect(updated?.executionHistory[0].status).toBe('success');
   });
+
+  it('应该获取任务状态统计', async () => {
+    // Create tasks with different statuses
+    await taskStore.createTask({
+      goalId: 'goal-1',
+      title: '待处理任务',
+      description: 'pending',
+      type: 'one_time',
+      priority: 'high',
+      status: 'pending',
+      execution: {
+        agentPrompt: 'test',
+        requiredTools: [],
+        requiredContext: [],
+        capabilityMode: 'direct',
+      },
+      adaptiveConfig: {
+        canAdjustDifficulty: false,
+        canAdjustFrequency: false,
+        successThreshold: 0.5,
+        executionHistory: [],
+      },
+      relatedKnowledgeIds: [],
+      dependencies: [],
+      executionHistory: [],
+    });
+
+    await taskStore.createTask({
+      goalId: 'goal-1',
+      title: '就绪任务',
+      description: 'ready',
+      type: 'one_time',
+      priority: 'high',
+      status: 'ready',
+      execution: {
+        agentPrompt: 'test',
+        requiredTools: [],
+        requiredContext: [],
+        capabilityMode: 'direct',
+      },
+      adaptiveConfig: {
+        canAdjustDifficulty: false,
+        canAdjustFrequency: false,
+        successThreshold: 0.5,
+        executionHistory: [],
+      },
+      relatedKnowledgeIds: [],
+      dependencies: [],
+      executionHistory: [],
+    });
+
+    await taskStore.createTask({
+      goalId: 'goal-1',
+      title: '执行中任务',
+      description: 'in_progress',
+      type: 'one_time',
+      priority: 'high',
+      status: 'in_progress',
+      execution: {
+        agentPrompt: 'test',
+        requiredTools: [],
+        requiredContext: [],
+        capabilityMode: 'direct',
+      },
+      adaptiveConfig: {
+        canAdjustDifficulty: false,
+        canAdjustFrequency: false,
+        successThreshold: 0.5,
+        executionHistory: [],
+      },
+      relatedKnowledgeIds: [],
+      dependencies: [],
+      executionHistory: [],
+    });
+
+    await taskStore.createTask({
+      goalId: 'goal-1',
+      title: '已完成任务',
+      description: 'completed',
+      type: 'one_time',
+      priority: 'high',
+      status: 'completed',
+      execution: {
+        agentPrompt: 'test',
+        requiredTools: [],
+        requiredContext: [],
+        capabilityMode: 'direct',
+      },
+      adaptiveConfig: {
+        canAdjustDifficulty: false,
+        canAdjustFrequency: false,
+        successThreshold: 0.5,
+        executionHistory: [],
+      },
+      relatedKnowledgeIds: [],
+      dependencies: [],
+      executionHistory: [],
+    });
+
+    await taskStore.createTask({
+      goalId: 'goal-1',
+      title: '失败任务',
+      description: 'failed',
+      type: 'one_time',
+      priority: 'high',
+      status: 'failed',
+      execution: {
+        agentPrompt: 'test',
+        requiredTools: [],
+        requiredContext: [],
+        capabilityMode: 'direct',
+      },
+      adaptiveConfig: {
+        canAdjustDifficulty: false,
+        canAdjustFrequency: false,
+        successThreshold: 0.5,
+        executionHistory: [],
+      },
+      relatedKnowledgeIds: [],
+      dependencies: [],
+      executionHistory: [],
+    });
+
+    await taskStore.createTask({
+      goalId: 'goal-1',
+      title: '已取消任务',
+      description: 'cancelled',
+      type: 'one_time',
+      priority: 'high',
+      status: 'cancelled',
+      execution: {
+        agentPrompt: 'test',
+        requiredTools: [],
+        requiredContext: [],
+        capabilityMode: 'direct',
+      },
+      adaptiveConfig: {
+        canAdjustDifficulty: false,
+        canAdjustFrequency: false,
+        successThreshold: 0.5,
+        executionHistory: [],
+      },
+      relatedKnowledgeIds: [],
+      dependencies: [],
+      executionHistory: [],
+    });
+
+    const stats = await taskStore.getTaskStatsByGoal('goal-1');
+    expect(stats.total).toBe(6);
+    expect(stats.pending).toBe(1);
+    expect(stats.ready).toBe(1);
+    expect(stats.inProgress).toBe(1);
+    expect(stats.completed).toBe(1);
+    expect(stats.failed).toBe(1);
+    expect(stats.cancelled).toBe(1);
+  });
 });
 
 describe('TaskDependencyGraph', () => {

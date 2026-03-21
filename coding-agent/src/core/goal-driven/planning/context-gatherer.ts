@@ -17,6 +17,7 @@ import {
   type INotificationQueue,
 } from '../types';
 import { generateId, now, extractKeywords } from '../utils';
+import { logError } from '../utils/logger';
 import type { GoalDrivenConfigStore } from '../config/store.js';
 
 /**
@@ -161,7 +162,6 @@ Always respond in valid JSON format.`,
       // Handle case where result or result.questions might be undefined
       const rawQuestions = result?.questions || [];
       if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
-        console.warn('[ContextGatherer] No questions generated, using fallback');
         return {
           questions: [
             {
@@ -192,8 +192,7 @@ Always respond in valid JSON format.`,
         context: result.reasoning,
       };
     } catch (error) {
-      console.error('[ContextGatherer] Error generating questions:', error);
-
+      await logError(error instanceof Error ? error : String(error), 'question_generation', goal.id);
       // Return fallback questions
       return {
         questions: [
@@ -443,8 +442,7 @@ Respond with JSON:
 
       return result.extractedInfo;
     } catch (error) {
-      console.error('[ContextGatherer] Error extracting info:', error);
-
+      await logError(error instanceof Error ? error : String(error), 'info_extraction');
       // Fallback: store the raw response
       return {
         rawResponse: userResponse,
@@ -527,8 +525,7 @@ Respond with JSON:
         reasoning: result.reasoning,
       };
     } catch (error) {
-      console.error('[ContextGatherer] Error checking sufficiency:', error);
-
+      await logError(error instanceof Error ? error : String(error), 'info_sufficiency_check', goal.id);
       // Fallback: assume we have enough if we have 3+ pieces of info
       const infoCount = Object.keys(collectedInfo).length;
       return {

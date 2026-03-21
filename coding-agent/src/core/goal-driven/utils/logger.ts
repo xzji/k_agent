@@ -43,6 +43,7 @@ interface LoggerOptions {
   consoleOutput?: boolean; // 是否同时输出到控制台，默认true
   minLevel?: LogLevel;    // 最低日志级别，默认debug
   llmLogMode?: LLMLogMode; // LLM日志详细程度，默认minimal
+  eventBus?: { emit: (type: string, payload: unknown) => void }; // 事件总线，用于发送日志到后台视图
 }
 
 export class GoalDrivenLogger {
@@ -55,6 +56,7 @@ export class GoalDrivenLogger {
   private logFilePath: string;
   private writeQueue: string[] = [];
   private flushTimer: NodeJS.Timeout | null = null;
+  private eventBus?: { emit: (type: string, payload: unknown) => void };
 
   constructor(options: LoggerOptions) {
     this.logDir = options.logDir;
@@ -64,6 +66,7 @@ export class GoalDrivenLogger {
     this.llmLogMode = options.llmLogMode ?? 'minimal';
     this.currentDate = this.getCurrentDate();
     this.logFilePath = join(this.logDir, `goal-driven-${this.currentDate}.log`);
+    this.eventBus = options.eventBus;
   }
 
   /**
@@ -311,6 +314,20 @@ export class GoalDrivenLogger {
 
     await this.writeEntry(entry);
 
+    // 发送事件到后台日志视图
+    if (this.eventBus) {
+      this.eventBus.emit("goal_driven:background_log", {
+        level,
+        source: category,
+        message,
+        timestamp: Date.now(),
+        goalId,
+        taskId,
+        data,
+        category: level === 'error' || level === 'warn' ? 'important' : 'normal',
+      });
+    }
+
     // 控制台输出
     if (this.consoleOutput) {
       const prefix = `[${entry.timestamp}] [${level.toUpperCase()}] [${category}]`;
@@ -366,8 +383,8 @@ export class GoalDrivenLogger {
     const lines = this.writeQueue.splice(0, this.writeQueue.length);
     try {
       await appendFile(this.logFilePath, lines.join(''), 'utf-8');
-    } catch (err) {
-      console.error('[GoalDrivenLogger] Failed to write log:', err);
+    } catch {
+      // Silently fail - can't log if logger fails
     }
   }
 
@@ -405,11 +422,10 @@ export class GoalDrivenLogger {
 
         if (age > maxAge) {
           await unlink(filePath);
-          console.log(`[GoalDrivenLogger] Deleted old log: ${file}`);
         }
       }
-    } catch (err) {
-      console.error('[GoalDrivenLogger] Failed to cleanup old logs:', err);
+    } catch {
+      // Silently fail - can't log if logger fails
     }
   }
 
@@ -418,7 +434,6 @@ export class GoalDrivenLogger {
    */
   async close(): Promise<void> {
     await this.flush();
-    console.log('[GoalDrivenLogger] Logger closed');
   }
 
   /**

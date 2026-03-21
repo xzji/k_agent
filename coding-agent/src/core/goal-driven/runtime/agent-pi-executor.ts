@@ -702,7 +702,7 @@ export class AgentPiBackgroundExecutor {
             this.pi.events.emit("goal_driven:task_progress", {
               taskId,
               progress: this.calculateProgress(output.content),
-              message: output.content.slice(0, 200),
+              message: output.content.slice(0, 400),
               timestamp: now(),
             });
           },
@@ -801,7 +801,7 @@ export class AgentPiBackgroundExecutor {
     for (const entry of knowledgeEntries) {
       await this.knowledgeStore.save(entry);
       // 发送"发现关键信息"日志到前台
-      this.log('info', 'KnowledgeCreated', `📋 发现关键信息：${entry.content.slice(0, 100)}${entry.content.length > 100 ? '...' : ''}`, {
+      this.log('info', 'KnowledgeCreated', `📋 发现关键信息：${entry.content.slice(0, 400)}${entry.content.length > 400 ? '...' : ''}`, {
         goalId,
         taskId,
         category: 'important',
@@ -930,6 +930,8 @@ export class AgentPiBackgroundExecutor {
 
   /**
    * 从输出中提取知识
+   *
+   * 优先提取 Agent 标记的 key_findings 代码块，回退到末尾段落提取
    */
   private extractKnowledgeFromOutput(
     taskId: string,
@@ -937,29 +939,77 @@ export class AgentPiBackgroundExecutor {
     output?: string,
     contextKnowledge?: KnowledgeEntry[]
   ): KnowledgeEntry[] {
-    const entries: KnowledgeEntry[] = [];
+    if (!output) return [];
 
-    if (!output) return entries;
+    // 1. 尝试提取 key_findings 代码块
+    const keyFindingsMatch = output.match(/```key_findings\n([\s\S]*?)```/);
+    if (keyFindingsMatch) {
+      const findings = keyFindingsMatch[1]
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 10 && (line.startsWith('-') || line.startsWith('*')));
 
-    // 提取关键段落作为知识
+      // 清理前缀的 "- " 或 "* "
+      const cleanedFindings = findings.map(line =>
+        line.replace(/^[-*]\s*/, '')
+      );
+
+      this.log('info', 'KnowledgeExtraction', `提取到 ${cleanedFindings.length} 条 key_findings`, {
+        taskId,
+        goalId,
+      });
+
+      return cleanedFindings.slice(0, 3).map(content => ({
+        id: `k-${generateId().slice(0, 8)}`,
+        goalId,
+        taskId,
+        content,
+        category: "task_output" as const,
+        tags: ["key-finding", "agent-marked"],
+        importance: 0.9,
+        relatedDimensionIds: [],
+        createdAt: now(),
+      }));
+    }
+
+    // 2. 回退逻辑：提取末尾段落
+    return this.extractFromEndParagraphs(taskId, goalId, output);
+  }
+
+  /**
+   * 回退：从末尾提取段落作为知识
+   */
+  private extractFromEndParagraphs(
+    taskId: string,
+    goalId: string,
+    output: string
+  ): KnowledgeEntry[] {
     const paragraphs = output
       .split("\n\n")
       .map((p) => p.trim())
       .filter((p) => p.length > 50 && p.length < 1000);
 
-    for (let i = 0; i < Math.min(paragraphs.length, 3); i++) {
-      entries.push({
+    const entries: KnowledgeEntry[] = [];
+
+    // 从末尾取最多2个段落
+    for (let i = paragraphs.length - 1; i >= 0 && entries.length < 2; i--) {
+      entries.unshift({
         id: `k-${generateId().slice(0, 8)}`,
         goalId,
         taskId,
         content: paragraphs[i],
-        category: "task_output",
+        category: "task_output" as const,
         tags: ["auto-extracted"],
         importance: 0.7,
         relatedDimensionIds: [],
         createdAt: now(),
       });
     }
+
+    this.log('debug', 'KnowledgeExtraction', `回退提取 ${entries.length} 个段落`, {
+      taskId,
+      goalId,
+    });
 
     return entries;
   }

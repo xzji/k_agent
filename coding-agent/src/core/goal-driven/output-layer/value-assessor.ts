@@ -17,6 +17,7 @@ import {
   type IGoalStore,
   type IKnowledgeStore,
 } from '../types';
+import { logError } from '../utils/logger';
 
 /**
  * Value assessment result
@@ -127,6 +128,7 @@ export class ValueAssessor {
         response_format: { type: 'json_object' },
       });
 
+      // Parse JSON, handling markdown code blocks
       const assessment: {
         valueScore: number;
         valueDimensions: {
@@ -138,7 +140,7 @@ export class ValueAssessor {
         reasoning: string;
         shouldNotify: boolean;
         priority: string;
-      } = JSON.parse(response.content);
+      } = this.parseJSONResponse(response.content);
 
       // Override novelty with calculated score
       assessment.valueDimensions.novelty = noveltyScore;
@@ -165,9 +167,8 @@ export class ValueAssessor {
         priority: this.validatePriority(assessment.priority),
       };
     } catch (error) {
-      console.error('[ValueAssessor] Failed to assess value:', error);
-
-      // Fallback assessment
+      // Log error to background, fallback assessment
+      await logError(error instanceof Error ? error : String(error), 'value_assessment', goal.id, taskId);
       return this.createFallbackAssessment(taskId, noveltyScore);
     }
   }
@@ -185,7 +186,8 @@ export class ValueAssessor {
         const assessment = await this.assessValue(taskId, result);
         assessments.push(assessment);
       } catch (error) {
-        console.error(`[ValueAssessor] Failed to assess task ${taskId}:`, error);
+        // Log to background and skip failed assessments
+        await logError(error instanceof Error ? error : String(error), 'value_assessment_batch', undefined, taskId);
       }
     }
 
@@ -230,7 +232,7 @@ export class ValueAssessor {
       // Round to 2 decimal places
       return Math.round(novelty * 100) / 100;
     } catch (error) {
-      console.error('[ValueAssessor] Error checking novelty:', error);
+      await logError(error instanceof Error ? error : String(error), 'novelty_check', goalId);
       return 0.5; // Unknown novelty
     }
   }
@@ -369,6 +371,32 @@ export class ValueAssessor {
       return priority as PriorityLevel;
     }
     return 'medium';
+  }
+
+  /**
+   * Parse JSON response, handling markdown code blocks
+   */
+  private parseJSONResponse<T>(content: string): T {
+    let jsonStr = content.trim();
+
+    // Try to extract from markdown code blocks
+    const jsonBlockMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/);
+    if (jsonBlockMatch) {
+      jsonStr = jsonBlockMatch[1];
+    } else {
+      const codeBlockMatch = jsonStr.match(/```\s*([\s\S]*?)\s*```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1];
+      } else {
+        // Try to find JSON object in plain text
+        const jsonObjectMatch = jsonStr.match(/\{[\s\S]*\}/);
+        if (jsonObjectMatch) {
+          jsonStr = jsonObjectMatch[0];
+        }
+      }
+    }
+
+    return JSON.parse(jsonStr) as T;
   }
 
   /**

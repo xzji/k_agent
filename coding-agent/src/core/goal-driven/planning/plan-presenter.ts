@@ -17,6 +17,7 @@ import {
   type INotificationQueue,
   type Notification,
 } from '../types';
+import { logError } from '../utils/logger';
 
 /**
  * Plan report structure
@@ -457,8 +458,7 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
 
       this.notificationQueue.enqueue(notification);
     } catch (error) {
-      console.error('[PlanPresenter] Failed to parse modification:', error);
-
+      await logError(error instanceof Error ? error : String(error), 'plan_modification', goalId);
       // Fallback: just acknowledge
       const notification: Omit<Notification, 'id' | 'createdAt'> = {
         type: 'info',
