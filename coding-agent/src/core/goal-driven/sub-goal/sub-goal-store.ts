@@ -11,6 +11,7 @@ import {
   type SubGoalStatus,
   type SubGoalProgress,
   type ISubGoalStore,
+  type PlanningMetadata,
 } from '../types';
 import { generateId, now, deepClone } from '../utils';
 
@@ -251,6 +252,30 @@ export class SubGoalStore implements ISubGoalStore {
     return this.updateSubGoal(subGoalId, {
       status: status as SubGoalStatus,
     });
+  }
+
+  /**
+   * Update planning metadata for a sub-goal
+   */
+  async updatePlanningMetadata(
+    subGoalId: string,
+    metadata: PlanningMetadata
+  ): Promise<void> {
+    const subGoal = await this.getSubGoal(subGoalId);
+    if (!subGoal) {
+      throw new Error(`SubGoal not found: ${subGoalId}`);
+    }
+
+    const updatedSubGoal: SubGoal = {
+      ...subGoal,
+      planningMetadata: metadata,
+      updatedAt: now(),
+    };
+
+    this.cache.set(subGoalId, updatedSubGoal);
+    this.dirty = true;
+
+    await this.saveToDisk();
   }
 
   /**

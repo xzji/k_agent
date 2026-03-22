@@ -306,7 +306,7 @@ async function main() {
           priority: 'high',
           weight: 0.25,
           dependencies: [],
-          estimatedDuration: 8,
+          estimatedDurationMinutes: 480,
           successCriteria: [
             { description: '输出5-8款候选车型', type: 'deliverable' },
           ],
@@ -317,7 +317,7 @@ async function main() {
           priority: 'high',
           weight: 0.25,
           dependencies: ['temp-0'],
-          estimatedDuration: 8,
+          estimatedDurationMinutes: 480,
           successCriteria: [
             { description: '完成参数对比表', type: 'deliverable' },
           ],
@@ -328,7 +328,7 @@ async function main() {
           priority: 'medium',
           weight: 0.2,
           dependencies: ['temp-1'],
-          estimatedDuration: 12,
+          estimatedDurationMinutes: 720,
           successCriteria: [
             { description: '获得3家以上报价', type: 'deliverable' },
           ],
@@ -339,7 +339,7 @@ async function main() {
           priority: 'high',
           weight: 0.15,
           dependencies: ['temp-2'],
-          estimatedDuration: 16,
+          estimatedDurationMinutes: 960,
           successCriteria: [
             { description: '完成试驾', type: 'deliverable' },
           ],
@@ -350,7 +350,7 @@ async function main() {
           priority: 'high',
           weight: 0.15,
           dependencies: ['temp-3'],
-          estimatedDuration: 8,
+          estimatedDurationMinutes: 480,
           successCriteria: [
             { description: '确定购车方案', type: 'deliverable' },
           ],
@@ -385,7 +385,8 @@ async function main() {
           {
             title: `任务 ${i + 1}-1: 搜索信息`,
             description: '搜索相关信息',
-            type: 'exploration',
+            execution_cycle: 'once',
+            execution_mode: 'standard',
             hierarchyLevel: 'task',
             priority: 'high',
             expectedResult: {
@@ -393,12 +394,13 @@ async function main() {
               description: '收集到的信息',
               format: 'markdown',
             },
-            estimatedDuration: 60,
+            estimatedDurationMinutes: 60,
           },
           {
             title: `任务 ${i + 1}-2: 整理报告`,
             description: '整理并生成报告',
-            type: 'one_time',
+            execution_cycle: 'once',
+            execution_mode: 'standard',
             hierarchyLevel: 'task',
             priority: 'high',
             expectedResult: {
@@ -406,7 +408,7 @@ async function main() {
               description: '报告文档',
               format: 'markdown',
             },
-            estimatedDuration: 30,
+            estimatedDurationMinutes: 30,
           },
         ],
         reasoning: '根据子目标生成任务',

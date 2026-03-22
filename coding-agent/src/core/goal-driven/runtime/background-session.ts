@@ -20,13 +20,16 @@ import type { SessionManager } from "../../session-manager.js";
 import type { ModelRegistry } from "../../model-registry.js";
 import type { SettingsManager } from "../../settings-manager.js";
 import type { ResourceLoader } from "../resource-loader.js";
-import type { ExecutionResult, KnowledgeEntry, TaskType } from "../types.js";
+import type { ExecutionResult, KnowledgeEntry, ExecutionCycle, ExecutionMode } from "../types.js";
 import type { UILogger } from "./ui-logger.js";
 import type { LogCategory } from "./log-message-types.js";
 import type { UILogLevel } from "./log-message-types.js";
+import type { ToolDefinition, ExtensionContext } from "../../extensions/types.js";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { now, generateId } from "../utils/index.js";
 import { logError, logSystemAction } from "../utils/logger.js";
 import { SessionLogWriter } from "./session-log-writer.js";
+import { Type } from "@sinclair/typebox";
 
 /**
  * Console 输出拦截器
@@ -107,7 +110,10 @@ class ConsoleInterceptor {
     }).join(' ');
 
     if (this.uiLogger) {
-      this.uiLogger.log(level, source, message);
+      this.uiLogger.log(level, source, message, {
+        category: 'normal',      // 不标记为重要，避免前台显示
+        backgroundOnly: true,    // 只在后台日志视图显示
+      });
     }
     // 不输出到原始 console，避免前台显示
   }
@@ -142,8 +148,8 @@ export interface BackgroundSessionConfig {
   taskId: string;
   /** 关联的目标 ID */
   goalId: string;
-  /** 任务类型 */
-  taskType: TaskType;
+  /** 任务类型（组合标签） */
+  taskType: string;
   /** 可用工具列表 */
   tools: string[];
   /** 系统提示词 */
@@ -246,6 +252,74 @@ interface PendingAskUserRequest {
 }
 
 /**
+ * Create the ask_user tool definition for background sessions
+ *
+ * This tool allows agents running in background sessions to ask the user
+ * for input during task execution. When called, it:
+ * 1. Emits an event to display the question in the foreground
+ * 2. Returns a promise that waits for the user's response
+ * 3. Resolves when the user provides input (via resolveAskUserResponse)
+ */
+function createAskUserToolDefinition(
+  sessionManager: BackgroundSessionManager,
+  sessionId: string
+): ToolDefinition {
+  return {
+    name: "ask_user",
+    label: "Ask User",
+    description:
+      "当任务执行过程中需要用户提供额外信息时，使用此工具向用户提问。用户回答后，你可以继续执行任务。例如：需要澄清用户偏好、确认执行方向、获取缺失的上下文信息等。",
+    parameters: Type.Object({
+      question: Type.String({ description: "向用户提出的问题，应该清晰、具体" }),
+      context: Type.Optional(Type.String({
+        description: "问题的背景说明，帮助用户理解为什么需要这个信息"
+      })),
+      options: Type.Optional(Type.Array(Type.String(), {
+        description: "可选的预设选项列表，用户可以从中选择"
+      })),
+      required: Type.Optional(Type.Boolean({
+        description: "是否必须回答，默认为 true",
+        default: true
+      })),
+    }),
+    async execute(
+      toolCallId: string,
+      params: { question: string; context?: string; options?: string[]; required?: boolean },
+      _signal: AbortSignal | undefined,
+      _onUpdate: unknown,
+      _ctx: ExtensionContext
+    ): Promise<AgentToolResult<{ response: string; timestamp: number }>> {
+      const question = params.question || "请提供您的回复";
+      const context = params.context;
+      const options = params.options;
+
+      // Use the public method to log
+      sessionManager.logToolMessage('info', 'ToolExecution', `ask_user called: ${question}`);
+
+      // Create a promise that will be resolved when user responds
+      return new Promise((resolve, reject) => {
+        // Store the pending request using public method
+        sessionManager.storePendingAskUserRequest(sessionId, toolCallId, question, resolve, reject);
+
+        // Emit event to show question in foreground
+        sessionManager.emitAskUserEvent(sessionId, toolCallId, question, context, options);
+
+        // Set a timeout to reject if no response (optional, could be configured)
+        // Default timeout: 30 minutes
+        const timeoutMs = 30 * 60 * 1000;
+        setTimeout(() => {
+          const pending = sessionManager.getPendingAskUserRequest(toolCallId);
+          if (pending) {
+            sessionManager.deletePendingAskUserRequest(toolCallId);
+            reject(new Error(`ask_user timeout: No response received within ${timeoutMs / 60000} minutes`));
+          }
+        }, timeoutMs);
+      });
+    },
+  };
+}
+
+/**
  * 后台会话管理器
  *
  * 管理独立后台会话的生命周期和执行
@@ -329,8 +403,8 @@ export class BackgroundSessionManager {
       const sessionManager = await this.createSessionManager(sessionPath, config);
       this.sessionManagers.set(sessionId, sessionManager);
 
-      // 创建 AgentSession 配置
-      const agentConfig = await this.buildAgentSessionConfig(sessionManager, config);
+      // 创建 AgentSession 配置，传入 sessionId 用于创建 ask_user 工具
+      const agentConfig = await this.buildAgentSessionConfig(sessionManager, config, sessionId);
 
       // 动态导入 AgentSession 避免循环依赖
       const { AgentSession: AgentSessionClass } = await import("../../agent-session.js");
@@ -365,7 +439,7 @@ export class BackgroundSessionManager {
       this.sessionLogWriter.startSession(sessionId, config.taskId, config.goalId, config.taskType);
 
       // 设置事件监听
-      this.setupSessionListeners(sessionId, session);
+      this.setupSessionListeners(sessionId, session, config.taskId);
 
       await logSystemAction("Background session created", {
         sessionId,
@@ -616,7 +690,8 @@ export class BackgroundSessionManager {
    */
   private async buildAgentSessionConfig(
     sessionManager: SessionManager,
-    config: BackgroundSessionConfig
+    config: BackgroundSessionConfig,
+    sessionId: string
   ): Promise<AgentSessionConfig> {
     const { Agent: AgentCore } = await import("@mariozechner/pi-agent-core");
 
@@ -658,6 +733,9 @@ export class BackgroundSessionManager {
       );
     }
 
+    // 创建 ask_user 工具定义
+    const askUserTool = createAskUserToolDefinition(this, sessionId);
+
     // 创建 Agent 核心 - 必须通过 initialState 传入 model 和 systemPrompt
     // 同时设置 getApiKey 回调，让 Agent 能够获取 API key
     this.log('debug', 'SessionLifecycle', `创建 AgentCore, model: ${model.provider}/${model.id}`);
@@ -685,13 +763,15 @@ export class BackgroundSessionManager {
       resourceLoader: this.resourceLoader,
       modelRegistry: this.modelRegistry,
       initialActiveToolNames: config.tools,
+      // 添加 ask_user 作为自定义工具
+      customTools: [askUserTool],
     };
   }
 
   /**
    * 设置会话事件监听
    */
-  private setupSessionListeners(sessionId: string, session: AgentSession): void {
+  private setupSessionListeners(sessionId: string, session: AgentSession, taskId: string): void {
     // AgentSession 使用 subscribe 方法订阅所有事件
     session.subscribe((event) => {
       // 手动递增 turnIndex（事件可能没有 turnIndex 属性）
@@ -731,7 +811,6 @@ export class BackgroundSessionManager {
 
         case "turn_start": {
           // 输出回合分隔线
-          const taskId = this.sessions.get(sessionId)?.handle.config.taskId ?? 'unknown';
           this.log('info', 'TurnEvent', `───────────────── Turn ${turnIndex} (${taskId}) ─────────────────`);
           this.log('debug', 'TurnEvent', `sessionId: ${sessionId}`);
           // 记录日志
@@ -908,12 +987,8 @@ export class BackgroundSessionManager {
             data: { params },
           });
 
-          // Special handling for ask_user tool
-          if (toolName === "ask_user") {
-            this.handleAskUserTool(sessionId, toolCallId, params);
-            // Don't emit the normal tool_call event for ask_user - we handle it specially
-            break;
-          }
+          // ask_user tool is now handled by the custom tool definition
+          // No special handling needed here - it uses the normal tool execution flow
 
           this.emitEvent({
             type: "tool_call",
@@ -966,7 +1041,7 @@ export class BackgroundSessionManager {
 
         case "turn_end": {
           // 回合结束
-          this.log('debug', 'TurnEvent', `Turn ${turnIndex} 结束, sessionId: ${sessionId}`);
+          this.log('info', 'TurnEvent', `───────────────── Turn ${turnIndex} 结束 (${taskId}) ─────────────────`);
 
           // 记录日志
           this.sessionLogWriter.addEntry(sessionId, {
@@ -975,7 +1050,6 @@ export class BackgroundSessionManager {
           });
 
           // 处理结果
-          this.log('debug', 'SessionLifecycle', `Session ${sessionId} received turn_end event`);
           this.handleTurnEnd(sessionId, event as any);
           break;
         }
@@ -1116,51 +1190,77 @@ export class BackgroundSessionManager {
     }
   }
 
+  // ── Public methods for ask_user tool support ──
+
   /**
-   * 处理 ask_user 工具调用
-   * 向用户显示问题并等待响应
+   * Log a tool message (public wrapper for private log method)
    */
-  private handleAskUserTool(sessionId: string, toolCallId: string, params: unknown): void {
-    const askParams = params as { question: string; context?: string; options?: string[] };
-    const question = askParams?.question || "请提供您的回复";
-    const context = askParams?.context;
-    const options = askParams?.options;
+  logToolMessage(
+    level: 'debug' | 'info' | 'warn' | 'error',
+    source: string,
+    message: string
+  ): void {
+    this.log(level, source, message);
+  }
 
-    this.log('info', 'ToolExecution', `ask_user: ${question}`);
-
-    // Store pending request
+  /**
+   * Store a pending ask_user request
+   */
+  storePendingAskUserRequest(
+    sessionId: string,
+    toolCallId: string,
+    question: string,
+    resolve: (response: string) => void,
+    reject: (error: Error) => void
+  ): void {
     const pendingRequest: PendingAskUserRequest = {
       sessionId,
       toolCallId,
       question,
-      resolve: () => {}, // Will be replaced
-      reject: () => {},   // Will be replaced
+      resolve,
+      reject,
     };
-
-    // Create a promise that can be resolved externally
-    const promise = new Promise<string>((resolve, reject) => {
-      pendingRequest.resolve = resolve;
-      pendingRequest.reject = reject;
-    });
-
     this.pendingAskUserRequests.set(toolCallId, pendingRequest);
+  }
 
-    // Emit event to show question in foreground
-    // The extension will listen for this and display the question to the user
+  /**
+   * Emit an ask_user event to show question in foreground
+   */
+  emitAskUserEvent(
+    sessionId: string,
+    toolCallId: string,
+    question: string,
+    context?: string,
+    options?: string[]
+  ): void {
     this.emitEvent({
-      type: "tool_call",
+      type: "tool_call" as const,
       sessionId,
       toolName: "ask_user",
       params: { question, context, options, toolCallId },
     });
 
-    // 发送重要日志到前台显示问题
+    // Log to foreground for visibility
     this.log('info', 'ActionRequired', `❓ ${question}`, {
       taskId: this.sessions.get(sessionId)?.handle.config.taskId,
       goalId: this.sessions.get(sessionId)?.handle.config.goalId,
       category: 'important',
       data: { toolCallId, context, options },
     });
+  }
+
+  /**
+   * Get a pending ask_user request
+   */
+  getPendingAskUserRequest(toolCallId: string): PendingAskUserRequest | undefined {
+    return this.pendingAskUserRequests.get(toolCallId);
+  }
+
+  /**
+   * Delete a pending ask_user request
+   */
+  deletePendingAskUserRequest(toolCallId: string): void {
+    this.pendingAskUserRequests.delete(toolCallId);
   }
 
   /**

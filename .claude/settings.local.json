@@ -26,7 +26,10 @@
       "Bash(cp:*)",
       "Bash(npx vitest:*)",
       "Bash(npx ts-node:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "WebFetch(domain:searx.space)",
+      "Read(//Users/bytedance/.pi/agent/goal-driven/logs/**)",
+      "Read(//Users/bytedance/.pi/agent/**)"
     ]
   }
 }

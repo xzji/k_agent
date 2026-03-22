@@ -26,6 +26,7 @@ import { PlanPresenter, type PlanReport } from '../planning/plan-presenter';
 import { UnifiedTaskScheduler } from '../scheduler/unified-task-scheduler';
 import { SuccessCriteriaChecker } from '../planning/success-criteria-checker';
 import { SubGoalStore } from '../sub-goal/sub-goal-store';
+import type { UILogger } from '../runtime/ui-logger.js';
 
 /**
  * Orchestration phase
@@ -102,13 +103,14 @@ export class GoalOrchestrator {
     private llm: LLMChannel,
     private idleDetector: IdleDetector,
     private userProfile: UserProfile,
-    subGoalStore?: SubGoalStore
+    subGoalStore?: SubGoalStore,
+    private uiLogger?: UILogger
   ) {
     // Initialize SubGoalStore (create new if not provided)
     this.subGoalStore = subGoalStore || new SubGoalStore();
 
     // Initialize planners
-    this.subGoalPlanner = new SubGoalPlanner(goalStore, this.subGoalStore, llm);
+    this.subGoalPlanner = new SubGoalPlanner(goalStore, this.subGoalStore, llm, uiLogger);
     this.taskPlanner = new TaskPlanner(taskStore, this.subGoalStore, llm);
     this.planPresenter = new PlanPresenter(
       goalStore,

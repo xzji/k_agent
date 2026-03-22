@@ -46,6 +46,10 @@ interface LoggerOptions {
   eventBus?: { emit: (type: string, payload: unknown) => void }; // 事件总线，用于发送日志到后台视图
 }
 
+export interface LogEntryOptions {
+  backgroundOnly?: boolean;  // 只输出到后台日志，不输出到控制台
+}
+
 export class GoalDrivenLogger {
   private logDir: string;
   private maxDays: number;
@@ -101,8 +105,8 @@ export class GoalDrivenLogger {
   /**
    * 记录系统操作
    */
-  async logSystemAction(message: string, data?: Record<string, unknown>): Promise<void> {
-    await this.info('system_action', message, data);
+  async logSystemAction(message: string, data?: Record<string, unknown>, options?: LogEntryOptions): Promise<void> {
+    await this.info('system_action', message, data, undefined, undefined, options);
   }
 
   /**
@@ -268,8 +272,8 @@ export class GoalDrivenLogger {
     await this.log('debug', category, message, data, goalId, taskId);
   }
 
-  async info(category: LogCategory, message: string, data?: Record<string, unknown>, goalId?: string, taskId?: string): Promise<void> {
-    await this.log('info', category, message, data, goalId, taskId);
+  async info(category: LogCategory, message: string, data?: Record<string, unknown>, goalId?: string, taskId?: string, options?: LogEntryOptions): Promise<void> {
+    await this.log('info', category, message, data, goalId, taskId, options);
   }
 
   async warn(category: LogCategory, message: string, data?: Record<string, unknown>, goalId?: string, taskId?: string): Promise<void> {
@@ -289,7 +293,8 @@ export class GoalDrivenLogger {
     message: string,
     data?: Record<string, unknown>,
     goalId?: string,
-    taskId?: string
+    taskId?: string,
+    options?: LogEntryOptions
   ): Promise<void> {
     // 检查日志级别
     if (!this.shouldLog(level)) return;
@@ -325,11 +330,12 @@ export class GoalDrivenLogger {
         taskId,
         data,
         category: level === 'error' || level === 'warn' ? 'important' : 'normal',
+        backgroundOnly: options?.backgroundOnly,
       });
     }
 
-    // 控制台输出
-    if (this.consoleOutput) {
+    // 控制台输出 - 检查 backgroundOnly
+    if (this.consoleOutput && !options?.backgroundOnly) {
       const prefix = `[${entry.timestamp}] [${level.toUpperCase()}] [${category}]`;
       const suffix = goalId ? ` (goal: ${goalId.slice(0, 8)})` : '';
       const formatted = `${prefix}${suffix} ${message}`;
@@ -493,8 +499,8 @@ export async function logUserInput(message: string, data?: Record<string, unknow
 /**
  * 便捷函数：记录系统操作
  */
-export async function logSystemAction(message: string, data?: Record<string, unknown>): Promise<void> {
-  await globalLogger?.logSystemAction(message, data);
+export async function logSystemAction(message: string, data?: Record<string, unknown>, options?: LogEntryOptions): Promise<void> {
+  await globalLogger?.logSystemAction(message, data, options);
 }
 
 /**

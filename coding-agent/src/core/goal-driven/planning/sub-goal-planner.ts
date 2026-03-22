@@ -17,6 +17,8 @@ import {
   type IGoalStore,
 } from '../types';
 import { logError } from '../utils/logger';
+import { parseJSONFromLLM } from '../utils';
+import type { UILogger } from '../runtime/ui-logger.js';
 
 /**
  * LLM Channel interface (minimal version)
@@ -31,37 +33,91 @@ interface LLMChannel {
 /**
  * Decomposition prompt template
  */
-const DECOMPOSE_PROMPT = `你是一位专业的目标规划专家。请将以下目标拆解为合理的子目标阶段。
+const DECOMPOSE_PROMPT = `# Role
+你是一位资深目标规划与战略拆解专家，擅长运用 MECE 原则和逆向推演法，将复杂目标拆解为可执行、可度量的子目标。
 
+# Context
+## MECE 原则
+MECE (Mutually Exclusive, Collectively Exhaustive) 要求：
+- 子目标之间相互独立，无重叠
+- 所有子目标完全覆盖目标范围，无遗漏
+
+## 逆向推演法
+从终态倒推，识别关键里程碑：
+1. 定义成功的最终状态
+2. 倒推达成终态的前置条件
+3. 识别关键依赖和风险点
+4. 形成可执行的阶段序列
+
+# Instructions
+
+## 拆解前思考
+在拆解前，请先思考：
+1. 这个目标的核心意图是什么？
+2. 成功达成后的状态是什么样的？
+3. 有哪些隐含的假设和前提条件？
+4. 可能遇到哪些风险和阻碍？
+
+## 拆解原则
+1. **独立性**: 每个子目标应该可独立交付价值
+2. **渐进性**: 子目标应呈现递进关系，逐步逼近最终目标
+3. **可度量性**: 每个子目标必须有明确的完成标准
+4. **依赖明确**: 清晰标注子目标间的依赖关系
+5. **风险可见**: 识别可能的风险点和应对策略
+
+## 边界处理
+- 子目标数量建议 3-7 个，根据目标复杂度调整
+- 避免过度拆解导致管理成本过高
+- 避免拆解不足导致子目标过于庞大
+- 对于模糊目标，优先明确成功标准
+
+# Goal Information
 目标: {{goalTitle}}
 描述: {{goalDescription}}
 用户背景信息:
 {{userContext}}
 
-要求:
-1. 每个子目标应该是可独立完成的阶段
-2. 子目标之间可能存在依赖关系（如必须先完成A才能做B）
-3. 每个子目标应该有明确的完成标准
-4. 子目标数量建议3-7个，根据目标复杂度调整
+# Output Format
+请严格按照以下 JSON 格式返回，确保所有必填字段完整：
 
-请按JSON格式返回：
 {
+  "goalAnalysis": {
+    "coreIntent": "核心意图：一句话概括目标的本质",
+    "successState": "成功状态：描述达成后的理想状态",
+    "assumptions": ["假设1：隐含的前提条件", "假设2：..."]
+  },
   "subGoals": [
     {
-      "name": "子目标名称",
-      "description": "详细描述",
-      "priority": "high|medium|low",
-      "weight": 0.3,
+      "id": 1,
+      "name": "子目标名称（简洁有力）",
+      "description": "详细描述：包含具体内容和边界",
+      "why": "必要性说明：为什么需要这个子目标",
+      "priority": "critical|high|medium|low",
+      "weight": 0.25,
       "dependencies": [],
-      "estimatedDuration": 8,
+      "estimatedDurationMinutes": 480,
       "successCriteria": [
-        {"description": "完成标准1", "type": "deliverable"},
-        {"description": "完成标准2", "type": "condition"}
+        {"description": "完成标准1", "type": "milestone"},
+        {"description": "完成标准2", "type": "deliverable"},
+        {"description": "完成标准3", "type": "condition"}
       ]
     }
   ],
-  "reasoning": "拆解理由说明"
-}`;
+  "executionOrder": "执行顺序建议：说明子目标的推荐执行顺序和理由",
+  "risks": ["风险点1：可能的问题和应对策略", "风险点2：..."],
+  "reasoning": "拆解理由：整体拆解思路和关键考量"
+}
+
+## 字段说明
+- **id**: 从 1 开始递增的数字，用于依赖引用
+- **dependencies**: 填写前置子目标的 id 数字（如 [1, 2] 表示依赖第 1 和第 2 个子目标）
+- **priority**: critical（关键路径）、high、medium、low
+- **weight**: 权重（0-1），所有子目标权重之和建议为 1
+- **estimatedDurationMinutes**: 预估所需分钟数
+- **successCriteria.type**:
+  - milestone: 关键节点/里程碑
+  - deliverable: 可交付成果
+  - condition: 需要满足的条件状态`;
 
 /**
  * Review prompt template
@@ -101,7 +157,8 @@ export class SubGoalPlanner {
   constructor(
     private goalStore: IGoalStore,
     private subGoalStore: ISubGoalStore,
-    private llm: LLMChannel
+    private llm: LLMChannel,
+    private uiLogger?: UILogger
   ) {}
 
   /**
@@ -129,34 +186,80 @@ export class SubGoalPlanner {
     });
 
     let decomposition: {
+      // 必填：目标分析
+      goalAnalysis: {
+        coreIntent: string;
+        successState: string;
+        assumptions: string[];
+      };
+
       subGoals: Array<{
+        id: number;
         name: string;
         description: string;
+        why: string;
         priority: string;
-        weight: number;
-        dependencies: string[];
-        estimatedDuration?: number;
+        weight?: number;
+        dependencies: number[];
+        estimatedDurationMinutes?: number;
         successCriteria: Array<{ description: string; type: string }>;
       }>;
+
+      executionOrder: string;
+      risks: string[];
       reasoning: string;
     };
 
     try {
-      decomposition = JSON.parse(response.content);
+      // Use finishReason to detect truncation
+      const isTruncated = response.finishReason === 'length';
+      decomposition = parseJSONFromLLM<{
+        goalAnalysis: {
+          coreIntent: string;
+          successState: string;
+          assumptions: string[];
+        };
+
+        subGoals: Array<{
+          id: number;
+          name: string;
+          description: string;
+          why: string;
+          priority: string;
+          weight?: number;
+          dependencies: number[];
+          estimatedDurationMinutes?: number;
+          successCriteria: Array<{ description: string; type: string }>;
+        }>;
+
+        executionOrder: string;
+        risks: string[];
+        reasoning: string;
+      }>(response.content, isTruncated);
     } catch (error) {
       await logError(error instanceof Error ? error : String(error), 'subgoal_decomposition', goal.id);
       // Fallback: create a simple default sub-goal
       return this.createDefaultSubGoals(goal);
     }
 
+    // Log goal analysis info to background log view
+    this.uiLogger?.info('GoalAnalysis', `Intent: ${decomposition.goalAnalysis?.coreIntent || 'N/A'}`);
+    this.uiLogger?.info('GoalAnalysis', `Success State: ${decomposition.goalAnalysis?.successState || 'N/A'}`);
+    if (decomposition.goalAnalysis?.assumptions?.length > 0) {
+      this.uiLogger?.info('GoalAnalysis', `Assumptions: ${decomposition.goalAnalysis.assumptions.join(', ')}`);
+    }
+    this.uiLogger?.info('ExecutionOrder', decomposition.executionOrder || 'N/A');
+    if (decomposition.risks?.length > 0) {
+      this.uiLogger?.info('Risks', decomposition.risks.join('; '));
+    }
+    this.uiLogger?.info('Reasoning', decomposition.reasoning || 'N/A');
+
     // Create sub-goals
     const createdSubGoals: SubGoal[] = [];
-    const tempIdMap = new Map<string, string>(); // Map temp IDs to real IDs
 
     // First pass: create all sub-goals with empty dependencies
     for (let i = 0; i < decomposition.subGoals.length; i++) {
       const sgData = decomposition.subGoals[i];
-      const tempId = `temp-${i}`;
 
       const subGoalData: SubGoalCreateData = {
         goalId: goal.id,
@@ -164,9 +267,9 @@ export class SubGoalPlanner {
         description: sgData.description || '',
         priority: this.validatePriority(sgData.priority),
         status: i === 0 ? 'active' : 'pending', // First one is active
-        weight: sgData.weight || 1 / decomposition.subGoals.length,
+        weight: sgData.weight ?? (1 / decomposition.subGoals.length),
         dependencies: [], // Will be updated in second pass
-        estimatedDuration: sgData.estimatedDuration,
+        estimatedDurationMinutes: sgData.estimatedDurationMinutes,
         taskIds: [],
         successCriteria: sgData.successCriteria.map((sc) => ({
           id: `sc-${generateId().slice(0, 8)}`,
@@ -178,24 +281,23 @@ export class SubGoalPlanner {
 
       const subGoal = await this.subGoalStore.createSubGoal(subGoalData);
       createdSubGoals.push(subGoal);
-      tempIdMap.set(tempId, subGoal.id);
     }
 
-    // Second pass: update dependencies using real IDs
+    // Second pass: update dependencies using numeric id references
     for (let i = 0; i < decomposition.subGoals.length; i++) {
       const sgData = decomposition.subGoals[i];
       const subGoal = createdSubGoals[i];
 
       if (sgData.dependencies && sgData.dependencies.length > 0) {
-        // Map temp dependency IDs to real IDs
+        // depId is a number (1-based) indicating which sub-goal it depends on
         const realDeps = sgData.dependencies
           .map((depId) => {
-            // Handle both temp IDs and name-based references
-            const index = parseInt(depId.replace('temp-', ''));
-            if (!isNaN(index) && index < createdSubGoals.length) {
+            // Convert 1-based id to 0-based index
+            const index = depId - 1;
+            if (index >= 0 && index < createdSubGoals.length) {
               return createdSubGoals[index].id;
             }
-            return tempIdMap.get(depId);
+            return undefined;
           })
           .filter((id): id is string => !!id);
 
@@ -351,7 +453,16 @@ export class SubGoalPlanner {
     };
 
     try {
-      reviewData = JSON.parse(response.content);
+      const isTruncated = response.finishReason === 'length';
+      reviewData = parseJSONFromLLM<{
+        reviewResults: Array<{
+          subGoalId: string;
+          status: string;
+          reasoning: string;
+          suggestions?: string[];
+        }>;
+        requiresUserConfirmation: boolean;
+      }>(response.content, isTruncated);
     } catch (error) {
       await logError(error instanceof Error ? error : String(error), 'subgoal_review', goalId);
       return { reviews: [], requiresUserConfirmation: false };

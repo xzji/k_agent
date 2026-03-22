@@ -9,7 +9,8 @@
 
 import {
   type Task,
-  type TaskType,
+  type ExecutionCycle,
+  type ExecutionMode,
   type TaskStatus,
   type UnifiedTask,
   type Goal,
@@ -92,6 +93,7 @@ export class UnifiedTaskScheduler {
   private eventBus?: EventBus;
   private useBackgroundExecution = false;
   private dispatchedTasks = new Map<string, { goalId: string; startTime: number }>();
+  private pendingTaskResolvers = new Map<string, { resolve: (result: ExecutionResult) => void; timeoutId: ReturnType<typeof setTimeout> }>();
   private eventUnsubscribe?: () => void;
 
   // State
@@ -215,6 +217,17 @@ export class UnifiedTaskScheduler {
       this.configUnsubscribe = undefined;
     }
 
+    // Reject any pending task resolvers
+    for (const [taskId, { resolve, timeoutId }] of this.pendingTaskResolvers) {
+      clearTimeout(timeoutId);
+      resolve({
+        success: false,
+        error: 'Scheduler stopped',
+        duration: 0,
+      });
+    }
+    this.pendingTaskResolvers.clear();
+
     // Wait for running tasks to complete
     if (this.runningTasks.size > 0) {
       await Promise.all(this.runningTasks.values());
@@ -337,7 +350,8 @@ export class UnifiedTaskScheduler {
         if (!hasExplorationTask) {
           tasks.push({
             id: `explore-${dim.id}`,
-            type: 'exploration',
+            executionCycle: 'once',
+            executionMode: 'standard',
             goalId: goal.id,
             dimensionId: dim.id,
             priority: this.calculateDimPriority(dim, goal),
@@ -364,7 +378,8 @@ export class UnifiedTaskScheduler {
       if (depsMet) {
         unifiedTasks.push({
           id: task.id,
-          type: task.type,
+          executionCycle: task.executionCycle,
+          executionMode: task.executionMode,
           goalId: task.goalId,
           priority: task.priority,
           status: task.status,
@@ -456,12 +471,8 @@ export class UnifiedTaskScheduler {
       return this.isDigestTime(prefs.preferredNotificationTime);
     }
 
-    // Check if user is idle for non-critical tasks
-    if (task.priority === 'medium' || task.priority === 'low') {
-      const isIdle = await this.idleDetector.isUserIdle();
-      if (!isIdle) return false;
-    }
-
+    // Note: Task execution does NOT wait for user idle.
+    // Idle detection is only used for notification push (see assessAndNotify method).
     return true;
   }
 
@@ -568,8 +579,8 @@ export class UnifiedTaskScheduler {
       // Check if this task should use background execution
       const useBackgroundExecution = this.shouldUseBackgroundExecution(task);
 
-      // Execute based on task type
-      const result = await this.executeByType(task, unifiedTask.type);
+      // Execute based on task mode
+      const result = await this.executeByMode(task);
 
       // For background execution, skip immediate status update - it will be handled by handleTaskResult
       if (useBackgroundExecution) {
@@ -588,7 +599,7 @@ export class UnifiedTaskScheduler {
       this.stats.tasksExecuted++;
 
       // Calculate next execution for recurring tasks
-      if (task.type === 'recurring' && task.schedule) {
+      if (task.executionCycle === 'recurring' && task.schedule) {
         await this.scheduleNextExecution(task);
       }
 
@@ -614,46 +625,43 @@ export class UnifiedTaskScheduler {
   }
 
   /**
-   * Execute task based on its type
+   * Execute task based on its mode
    */
-  private async executeByType(task: Task, type: TaskType): Promise<ExecutionResult> {
-    // Check if we should use background execution for this task
+  private async executeByMode(task: Task): Promise<ExecutionResult> {
+    // All tasks use background execution (interactive tasks use ask_user tool)
     if (this.shouldUseBackgroundExecution(task)) {
       return this.executeWithBackgroundExecutor(task);
     }
 
-    // Otherwise use direct execution
-    switch (type) {
-      case 'exploration':
-        return this.executeExplorationTask(task);
-      case 'recurring':
-        return this.executeRecurringTask(task);
-      case 'one_time':
+    // Fallback for when background executor is not available
+    switch (task.executionMode) {
+      case 'standard':
+        // Standard tasks execute based on their cycle
+        if (task.executionCycle === 'recurring') {
+          return this.executeRecurringTask(task);
+        }
         return this.executeOneTimeTask(task);
       case 'interactive':
-        return this.executeInteractiveTask(task);
       case 'monitoring':
-        return this.executeMonitoringTask(task);
       case 'event_triggered':
-        return this.executeEventTriggeredTask(task);
+        return this.executeOneTimeTask(task);
       default:
-        throw new Error(`Unknown task type: ${type}`);
+        throw new Error(`Unknown task mode: ${task.executionMode}`);
     }
   }
 
   /**
    * Check if task should use background execution
    *
-   * All non-interactive tasks use Agent Pi for execution. The background executor
+   * All tasks use Agent Pi for execution. The background executor
    * handles queuing internally when at capacity.
+   * Interactive tasks use the ask_user tool for user input.
    *
-   * @throws Error if background executor is not available for non-interactive tasks
+   * @throws Error if background executor is not available
    */
   private shouldUseBackgroundExecution(task: Task): boolean {
-    // Interactive tasks always use direct execution (need user input)
-    if (task.type === 'interactive') return false;
-
-    // Non-interactive tasks require background executor
+    // All tasks use background execution (executor handles queuing internally)
+    // Interactive tasks use ask_user tool for user input
     if (!this.useBackgroundExecution || !this.backgroundExecutor) {
       const reason = this.backgroundExecutorUnavailableReason ?? 'Unknown reason';
       throw new Error(
@@ -661,12 +669,12 @@ export class UnifiedTaskScheduler {
       );
     }
 
-    // All non-interactive tasks use background execution (executor handles queuing internally)
     return true;
   }
 
   /**
    * Execute task using background executor
+   * Returns a Promise that waits for the task to actually complete
    */
   private async executeWithBackgroundExecutor(task: Task): Promise<ExecutionResult> {
     if (!this.eventBus) {
@@ -687,25 +695,40 @@ export class UnifiedTaskScheduler {
     const toolProvider = getToolProvider();
     const actualTools = toolProvider ? await toolProvider.getToolNames() : task.execution.requiredTools;
 
-    // Dispatch to background executor via EventBus
-    this.eventBus.emit('goal_driven:execute_task', {
-      taskId: task.id,
-      goalId: task.goalId,
-      taskType: task.type,
-      agentPrompt: task.execution.agentPrompt,
-      requiredTools: actualTools,
-      contextKnowledge: knowledgeEntries,
-      timeoutMs: task.execution.estimatedDuration ? task.execution.estimatedDuration * 1000 : undefined,
-    });
+    // Create Promise that waits for task completion
+    return new Promise<ExecutionResult>((resolve) => {
+      // Calculate timeout (default 30 minutes)
+      const timeoutMs = task.execution.estimatedDurationMinutes
+        ? task.execution.estimatedDurationMinutes * 60 * 1000
+        : 30 * 60 * 1000;
 
-    // Return a pending result - actual result will come via event
-    return {
-      success: true,
-      output: `🚀 任务已派发到后台执行器\n\n` +
-        `任务 "${task.title}" 正在后台通过 Agent Pi 执行，使用工具: ${actualTools.join(', ') || '无'}\n\n` +
-        `执行完成后将通过通知推送结果。`,
-      duration: 0,
-    };
+      // Set up timeout handler
+      const timeoutId = setTimeout(() => {
+        if (this.pendingTaskResolvers.has(task.id)) {
+          this.pendingTaskResolvers.delete(task.id);
+          this.dispatchedTasks.delete(task.id);
+          resolve({
+            success: false,
+            error: `任务超时 (${timeoutMs / 60000} 分钟)`,
+            duration: timeoutMs,
+          });
+        }
+      }, timeoutMs);
+
+      // Store resolver for handleTaskResult to call
+      this.pendingTaskResolvers.set(task.id, { resolve, timeoutId });
+
+      // Dispatch to background executor via EventBus
+      this.eventBus!.emit('goal_driven:execute_task', {
+        taskId: task.id,
+        goalId: task.goalId,
+        taskType: `${task.executionCycle}/${task.executionMode}`,
+        agentPrompt: task.execution.agentPrompt,
+        requiredTools: actualTools,
+        contextKnowledge: knowledgeEntries,
+        timeoutMs,
+      });
+    });
   }
 
   /**
@@ -717,21 +740,29 @@ export class UnifiedTaskScheduler {
     // Remove from dispatched tasks
     this.dispatchedTasks.delete(taskId);
 
+    // Build result
+    const result: ExecutionResult = {
+      success,
+      output,
+      error,
+      duration,
+      knowledgeEntries,
+    };
+
+    // If there's a pending resolver, call it to complete the waiting Promise
+    const pending = this.pendingTaskResolvers.get(taskId);
+    if (pending) {
+      clearTimeout(pending.timeoutId);
+      this.pendingTaskResolvers.delete(taskId);
+      pending.resolve(result);
+    }
+
     try {
       // Get the task
       const task = await this.taskStore.getTask(taskId);
       if (!task) {
         return;
       }
-
-      // Build result
-      const result: ExecutionResult = {
-        success,
-        output,
-        error,
-        duration,
-        knowledgeEntries,
-      };
 
       // Update task status
       const newStatus: TaskStatus = success ? 'completed' : 'failed';
@@ -755,7 +786,7 @@ export class UnifiedTaskScheduler {
       }
 
       // Handle recurring tasks
-      if (task.type === 'recurring' && task.schedule && success) {
+      if (task.executionCycle === 'recurring' && task.schedule && success) {
         await this.scheduleNextExecution(task);
       }
 
@@ -794,12 +825,13 @@ export class UnifiedTaskScheduler {
       dimensionId: unifiedTask.dimensionId,
       title: `Explore dimension: ${dim.name}`,
       description: `Gather information about ${dim.name} for goal: ${goal.title}`,
-      type: 'exploration',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: unifiedTask.priority,
       status: 'in_progress',
       execution: {
         agentPrompt: `Explore the dimension "${dim.name}" for the goal: ${goal.title}. Focus on gathering: ${dim.infoNeeds.map(i => i.description).join(', ')}`,
-        requiredTools: ['web_search', 'file_read'],
+        requiredTools: ['websearch', 'read'],
         requiredContext: ['goal_context', 'dimension_context'],
         capabilityMode: 'composite',
       },
@@ -851,30 +883,6 @@ export class UnifiedTaskScheduler {
    */
   private async executeOneTimeTask(task: Task): Promise<ExecutionResult> {
     return this.executionPipeline.run(task);
-  }
-
-  /**
-   * Execute interactive task
-   */
-  private async executeInteractiveTask(task: Task): Promise<ExecutionResult> {
-    // Interactive tasks are handled specially - they transition to waiting_user state
-    // and resume when user responds
-    if (!task.pendingQuestions) {
-      // Start interactive gathering
-      return {
-        success: true,
-        output: 'Interactive gathering started',
-        duration: 0,
-      };
-    }
-
-    // If we have pending questions, the task should be in waiting_user state
-    // This shouldn't happen in normal flow
-    return {
-      success: false,
-      error: 'Interactive task has pending questions but was scheduled',
-      duration: 0,
-    };
   }
 
   /**
@@ -1086,15 +1094,17 @@ Please ensure this execution provides fresh insights and varies from previous ru
     }
 
     // Task type label
-    const typeLabels: Record<string, string> = {
-      exploration: '信息收集',
-      one_time: '单次任务',
-      recurring: '周期任务',
-      monitoring: '监控任务',
-      event_triggered: '事件触发',
-      interactive: '交互任务',
+    const cycleLabels: Record<string, string> = {
+      once: '单次',
+      recurring: '周期',
     };
-    const taskTypeLabel = typeLabels[task.type] || task.type;
+    const modeLabels: Record<string, string> = {
+      standard: '标准',
+      interactive: '交互',
+      monitoring: '监控',
+      event_triggered: '事件触发',
+    };
+    const taskTypeLabel = `${cycleLabels[task.executionCycle] || task.executionCycle}/${modeLabels[task.executionMode] || task.executionMode}`;
 
     // Task context header
     lines.push(`## ✅ ${task.title} - 执行完成`);
@@ -1327,7 +1337,8 @@ Please ensure this execution provides fresh insights and varies from previous ru
       // If scheduler is stopped, just run this one task
       const unifiedTask: UnifiedTask = {
         id: task.id,
-        type: task.type,
+        executionCycle: task.executionCycle,
+        executionMode: task.executionMode,
         goalId: task.goalId,
         priority: task.priority,
         status: 'ready',
@@ -1348,7 +1359,8 @@ Please ensure this execution provides fresh insights and varies from previous ru
 
     const unifiedTask: UnifiedTask = {
       id: task.id,
-      type: task.type,
+      executionCycle: task.executionCycle,
+      executionMode: task.executionMode,
       goalId: task.goalId,
       priority: task.priority,
       status: 'ready',

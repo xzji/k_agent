@@ -82,8 +82,8 @@ export class ExecutionPipeline {
       // Inject knowledge into prompt
       const enhancedPrompt = await this.injectKnowledge(task);
 
-      // Execute based on task type
-      const result = await this.executeByType(task, enhancedPrompt);
+      // Execute based on task mode
+      const result = await this.executeByMode(task, enhancedPrompt);
 
       const duration = now() - startTime;
 
@@ -110,16 +110,16 @@ export class ExecutionPipeline {
   }
 
   /**
-   * Execute task based on type
+   * Execute task based on mode
    */
-  private async executeByType(task: Task, prompt: string): Promise<ExecutionResult> {
-    switch (task.type) {
-      case 'exploration':
-        return this.executeExploration(task, prompt);
-      case 'one_time':
+  private async executeByMode(task: Task, prompt: string): Promise<ExecutionResult> {
+    switch (task.executionMode) {
+      case 'standard':
+        // Standard tasks execute based on their cycle
+        if (task.executionCycle === 'recurring') {
+          return this.executeRecurring(task, prompt);
+        }
         return this.executeOneTime(task, prompt);
-      case 'recurring':
-        return this.executeRecurring(task, prompt);
       case 'monitoring':
         return this.executeMonitoring(task, prompt);
       case 'event_triggered':
@@ -127,7 +127,7 @@ export class ExecutionPipeline {
       case 'interactive':
         return this.executeInteractive(task, prompt);
       default:
-        throw new Error(`Unknown task type: ${task.type}`);
+        throw new Error(`Unknown task mode: ${task.executionMode}`);
     }
   }
 

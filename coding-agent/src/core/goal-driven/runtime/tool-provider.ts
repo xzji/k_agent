@@ -46,7 +46,7 @@ export class ToolProvider {
    */
   private getDefaultTools(): ToolInfo[] {
     return [
-      { name: "web_search", description: "网络搜索", category: "search" },
+      { name: "websearch", description: "网络搜索", category: "search" },
       { name: "codebase_search", description: "代码库搜索", category: "search" },
       { name: "read", description: "读取文件", category: "file" },
       { name: "edit", description: "编辑文件", category: "file" },

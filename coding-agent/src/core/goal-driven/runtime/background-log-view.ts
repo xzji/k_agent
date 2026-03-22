@@ -134,7 +134,7 @@ export class BackgroundLogView {
     for (const log of visibleLogs) {
       // 为 system_action 添加上分隔线
       if (log.source === 'system_action') {
-        lines.push(fg("dim", "─".repeat(Math.max(0, usableWidth))));
+        lines.push("─".repeat(Math.max(0, usableWidth)));
       }
 
       const time = new Date(log.timestamp).toLocaleTimeString();
@@ -158,7 +158,7 @@ export class BackgroundLogView {
 
       // 为 system_action 添加下分隔线
       if (log.source === 'system_action') {
-        lines.push(fg("dim", "─".repeat(Math.max(0, usableWidth))));
+        lines.push("─".repeat(Math.max(0, usableWidth)));
       }
     }
 

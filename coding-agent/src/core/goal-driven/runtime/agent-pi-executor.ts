@@ -25,7 +25,8 @@ import type {
   IKnowledgeStore,
   INotificationQueue,
   IGoalStore,
-  TaskType,
+  ExecutionCycle,
+  ExecutionMode,
 } from "../types.js";
 import type { UILogger } from "./ui-logger.js";
 import type { LogCategory } from "./log-message-types.js";
@@ -54,7 +55,7 @@ export interface ExecuteTaskEvent {
   payload: {
     taskId: string;
     goalId: string;
-    taskType: TaskType;
+    taskType: string;  // 组合标签如 "once/standard", "recurring/monitoring"
     agentPrompt: string;
     requiredTools: string[];
     contextKnowledge?: KnowledgeEntry[];
@@ -126,7 +127,7 @@ interface RunningTaskState {
 interface QueuedTask {
   taskId: string;
   goalId: string;
-  taskType: TaskType;
+  taskType: string;  // 组合标签
   agentPrompt: string;
   requiredTools: string[];
   contextKnowledge?: KnowledgeEntry[];
@@ -413,20 +414,17 @@ export class AgentPiBackgroundExecutor {
       }
     }
 
-    // 2. 基于任务类型的紧迫度
-    switch (task.type) {
+    // 2. 基于任务执行模式的紧迫度
+    switch (task.executionMode) {
       case 'monitoring':
       case 'event_triggered':
         urgency += 0.3; // 监控和事件触发任务较紧迫
         break;
-      case 'exploration':
+      case 'interactive':
         urgency += 0.2;
         break;
-      case 'one_time':
+      case 'standard':
         urgency += 0.25;
-        break;
-      case 'recurring':
-        urgency += 0.15;
         break;
     }
 

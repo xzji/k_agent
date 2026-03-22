@@ -89,7 +89,7 @@ async function createExampleGoal(goalStore: GoalStore) {
           { id: 'in-2', description: '在线课程推荐', priority: 'high' },
         ],
         sources: [
-          { id: 'src-1', type: 'web_search', config: {}, priority: 'high' },
+          { id: 'src-1', type: 'websearch', config: {}, priority: 'high' },
         ],
         status: 'pending',
         createdAt: now(),
@@ -105,7 +105,7 @@ async function createExampleGoal(goalStore: GoalStore) {
           { id: 'in-4', description: '报名费用和流程', priority: 'medium' },
         ],
         sources: [
-          { id: 'src-2', type: 'web_search', config: {}, priority: 'medium' },
+          { id: 'src-2', type: 'websearch', config: {}, priority: 'medium' },
         ],
         status: 'pending',
         createdAt: now(),
@@ -169,7 +169,8 @@ async function createExampleTasks(
     goalId,
     title: '收集用户偏好信息',
     description: '了解用户的当前英语水平、学习时间和预算',
-    type: 'interactive',
+    executionCycle: 'once',
+    executionMode: 'interactive',
     priority: 'critical',
     status: 'ready',
     hierarchyLevel: 'task',
@@ -201,13 +202,14 @@ async function createExampleTasks(
     goalId,
     title: '搜索雅思学习资源',
     description: '搜索并整理最佳的雅思备考书籍和在线课程',
-    type: 'exploration',
+    executionCycle: 'once',
+    executionMode: 'standard',
     priority: 'high',
     status: 'blocked', // 依赖任务1
     hierarchyLevel: 'task',
     execution: {
       agentPrompt: '搜索雅思备考资源，包括书籍、APP、在线课程',
-      requiredTools: ['web_search'],
+      requiredTools: ['websearch'],
       requiredContext: ['user_preferences'],
       capabilityMode: 'composite',
     },
@@ -233,7 +235,9 @@ async function createExampleTasks(
     goalId,
     title: '每日学习提醒',
     description: '每天提醒用户完成雅思学习任务',
-    type: 'recurring',
+    executionCycle: 'recurring',
+    executionMode: 'standard',
+    recurrence: '每天',
     priority: 'medium',
     status: 'blocked',
     hierarchyLevel: 'task',
@@ -619,20 +623,18 @@ export async function runBuyCarDemo() {
 
   // 添加推送策略字段到任务
   for (const task of allTasks) {
-    const shouldNotify = task.type !== 'monitoring';
+    const shouldNotify = task.executionMode !== 'monitoring';
     const notifyReason = shouldNotify
-      ? task.type === 'exploration'
-        ? '用户需了解收集到的信息'
-        : task.type === 'interactive'
-          ? '需要用户决策'
-          : '任务完成结果'
+      ? task.executionMode === 'interactive'
+        ? '需要用户决策'
+        : '任务完成结果'
       : undefined;
 
     await taskStore.updateTask(task.id, {
       shouldNotify,
       notifyReason,
       notifyTiming: shouldNotify ? '任务完成后' : undefined,
-      requiresUserInput: task.type === 'interactive',
+      requiresUserInput: task.executionMode === 'interactive',
       valueThreshold: shouldNotify ? 0.7 : 0,
     });
   }

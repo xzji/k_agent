@@ -15,15 +15,14 @@
 export type PriorityLevel = 'critical' | 'high' | 'medium' | 'low' | 'background';
 
 /**
- * Task types supported by the unified scheduler
+ * 执行周期 - 任务执行几次
  */
-export type TaskType =
-  | 'exploration'      // Dimension exploration tasks
-  | 'one_time'         // One-time execution tasks
-  | 'recurring'        // Periodic recurring tasks
-  | 'event_triggered'  // Event-driven tasks
-  | 'monitoring'       // Continuous monitoring tasks
-  | 'interactive';     // Tasks requiring user interaction
+export type ExecutionCycle = 'once' | 'recurring';
+
+/**
+ * 执行模式 - 任务触发和推进方式
+ */
+export type ExecutionMode = 'standard' | 'interactive' | 'monitoring' | 'event_triggered';
 
 /**
  * Task status in the state machine
@@ -56,7 +55,7 @@ export type ExpectedResultType = 'information' | 'deliverable' | 'decision' | 'a
 export interface TaskExpectedResult {
   type: ExpectedResultType;
   description: string;
-  format: 'json' | 'markdown' | 'table' | 'text' | 'code';
+  format: 'json' | 'markdown' | 'table' | 'text' | 'code' | 'other';
   validationCriteria?: string[];  // 验证结果是否合格的标准
 }
 
@@ -86,7 +85,7 @@ export interface ExecutionConfig {
   agentPrompt: string;
   requiredTools: string[];
   requiredContext: string[];
-  estimatedDuration?: number;
+  estimatedDurationMinutes?: number;  // 预估执行时长（分钟）
   capabilityMode: CapabilityMode;
 }
 
@@ -187,11 +186,15 @@ export interface Task {
   goalId: string;
   subGoalId?: string;     // Associated sub-goal (optional)
   dimensionId?: string;   // Associated dimension (optional)
-  parentTaskId?: string;  // Parent task for nesting
+  parentId?: string;      // Parent task for nesting (renamed from parentTaskId)
 
   title: string;
   description: string;
-  type: TaskType;
+  // 替换原来的 type: TaskType
+  executionCycle: ExecutionCycle;    // 执行周期
+  executionMode: ExecutionMode;      // 执行模式
+  recurrence?: string;               // 周期频率描述（如 "每天", "每周一"）
+  triggerCondition?: string;         // 触发条件描述
   priority: PriorityLevel;
   status: TaskStatus;
 
@@ -247,7 +250,8 @@ export interface Task {
  */
 export interface UnifiedTask {
   id: string;
-  type: TaskType;
+  executionCycle: ExecutionCycle;  // 替换 type
+  executionMode: ExecutionMode;    // 新增
   goalId: string;
   dimensionId?: string;
   priority: PriorityLevel;
@@ -329,7 +333,7 @@ export interface InformationNeed {
  */
 export interface SourceConfig {
   id: string;
-  type: 'web_search' | 'file_system' | 'api' | 'user_input';
+  type: 'websearch' | 'file_system' | 'api' | 'user_input';
   config: Record<string, unknown>;
   priority: PriorityLevel;
 }

@@ -117,7 +117,7 @@ export class ValueAssessor {
     // Build assessment prompt
     const prompt = ASSESS_VALUE_PROMPT
       .replace('{{taskTitle}}', task.title)
-      .replace('{{taskType}}', task.type)
+      .replace('{{taskType}}', `${task.executionCycle}/${task.executionMode}`)
       .replace('{{expectedResult}}', task.expectedResult?.description || '未定义')
       .replace('{{resultOutput}}', executionResult.output?.slice(0, 2000) || '')
       .replace('{{goalTitle}}', goal.title);

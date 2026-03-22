@@ -18,6 +18,7 @@ import {
   type Notification,
 } from '../types';
 import { logError } from '../utils/logger';
+import { parseJSONFromLLM } from '../utils';
 
 /**
  * Plan report structure
@@ -39,11 +40,12 @@ export interface PlanReport {
     priority: string;
     status: string;
     weight: number;
-    estimatedDuration?: number;
+    estimatedDurationMinutes?: number;
     tasks: Array<{
       id: string;
       title: string;
-      type: string;
+      executionCycle: string;
+      executionMode: string;
       priority: string;
       hierarchyLevel: string;
       expectedResult: string;
@@ -139,11 +141,12 @@ export class PlanPresenter {
         priority: sg.priority,
         status: sg.status,
         weight: sg.weight,
-        estimatedDuration: sg.estimatedDuration,
+        estimatedDurationMinutes: sg.estimatedDurationMinutes,
         tasks: tasks.map((t) => ({
           id: t.id,
           title: t.title,
-          type: t.type,
+          executionCycle: t.executionCycle,
+          executionMode: t.executionMode,
           priority: t.priority,
           hierarchyLevel: t.hierarchyLevel ?? 'task',
           expectedResult: t.expectedResult?.description ?? '',
@@ -159,11 +162,12 @@ export class PlanPresenter {
       });
     }
 
-    // Calculate timeline
-    const totalDuration = subGoals.reduce(
-      (sum, sg) => sum + (sg.estimatedDuration || 0),
+    // Calculate timeline (convert minutes to hours for display)
+    const totalDurationMinutes = subGoals.reduce(
+      (sum, sg) => sum + (sg.estimatedDurationMinutes || 0),
       0
     );
+    const totalDurationHours = totalDurationMinutes / 60;
 
     // Generate notification strategy based on goal priority
     const notificationStrategy = this.generateNotificationStrategy(goal);
@@ -174,7 +178,7 @@ export class PlanPresenter {
       taskCount: totalTasks,
       notifyTaskCount: notifyTasks,
       interactiveTaskCount: interactiveTasks,
-      estimatedDuration: this.formatTimeline(totalDuration),
+      estimatedDuration: this.formatTimeline(totalDurationHours),
     };
 
     return {
@@ -182,7 +186,7 @@ export class PlanPresenter {
       goalTitle: goal.title,
       summary,
       subGoals: subGoalReports,
-      timeline: this.formatTimeline(totalDuration),
+      timeline: this.formatTimeline(totalDurationHours),
       notificationStrategy,
     };
   }
@@ -226,33 +230,28 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
   /**
    * Format task type for display
    */
-  private formatTaskType(type: string): string {
-    const typeLabels: Record<string, string> = {
-      exploration: '探索',
-      one_time: '单次',
+  private formatTaskInfo(executionCycle: string, executionMode: string): string {
+    const cycleLabels: Record<string, string> = {
+      once: '单次',
       recurring: '周期',
+    };
+    const modeLabels: Record<string, string> = {
+      standard: '标准',
       interactive: '交互',
       monitoring: '监控',
       event_triggered: '触发',
     };
-    return typeLabels[type] || type;
+    return `${cycleLabels[executionCycle] || executionCycle}/${modeLabels[executionMode] || executionMode}`;
   }
 
   /**
    * Format task schedule/trigger time for display
    */
   private formatTaskSchedule(task: PlanReport['subGoals'][0]['tasks'][0]): string {
-    // 根据任务类型显示触发时机
-    switch (task.type) {
+    // 根据执行模式显示触发时机
+    switch (task.executionMode) {
       case 'interactive':
         return '立即执行，需用户输入';
-
-      case 'recurring':
-        if (task.schedule) {
-          const interval = this.formatInterval(task.schedule.intervalMs);
-          return `每${interval}`;
-        }
-        return '周期执行';
 
       case 'monitoring':
         if (task.schedule) {
@@ -264,15 +263,16 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
       case 'event_triggered':
         return '事件触发';
 
-      case 'exploration':
-        // 有依赖的探索任务
-        if (task.dependencies.length > 0) {
-          return this.formatDependencies(task.dependencyTitles);
-        }
-        return task.notifyTiming || '立即执行';
-
-      case 'one_time':
+      case 'standard':
       default:
+        // 周期任务
+        if (task.executionCycle === 'recurring') {
+          if (task.schedule) {
+            const interval = this.formatInterval(task.schedule.intervalMs);
+            return `每${interval}`;
+          }
+          return '周期执行';
+        }
         // 有依赖的一次性任务
         if (task.dependencies.length > 0) {
           return this.formatDependencies(task.dependencyTitles);
@@ -388,14 +388,14 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
       lines.push(`\n### ${i + 1}. ${sg.name}`);
       lines.push(`描述: ${sg.description}`);
       lines.push(`优先级: ${sg.priority} | 权重: ${Math.round(sg.weight * 100)}%`);
-      if (sg.estimatedDuration) {
-        lines.push(`预计耗时: ${this.formatDuration(sg.estimatedDuration)}`);
+      if (sg.estimatedDurationMinutes) {
+        lines.push(`预计耗时: ${this.formatDuration(sg.estimatedDurationMinutes / 60)}`);
       }
 
       if (sg.tasks.length > 0) {
         lines.push('\n任务列表:');
         for (const task of sg.tasks) {
-          const typeLabel = this.formatTaskType(task.type);
+          const typeLabel = this.formatTaskInfo(task.executionCycle, task.executionMode);
           const scheduleLabel = this.formatTaskSchedule(task);
           const scheduleStr = scheduleLabel ? ` | ${scheduleLabel}` : '';
           lines.push(`  - [${typeLabel}] ${task.title} (${task.priority})${scheduleStr}`);
@@ -445,7 +445,13 @@ ${subGoals.map((sg) => `- ${sg.name} (${sg.priority}, 权重${Math.round(sg.weig
         response_format: { type: 'json_object' },
       });
 
-      const modification = JSON.parse(response.content);
+      const isTruncated = response.finishReason === 'length';
+      const modification = parseJSONFromLLM<{
+        modificationType: string;
+        target: string;
+        details: string;
+        requiresConfirmation: boolean;
+      }>(response.content, isTruncated);
 
       // Create notification about the modification
       const notification: Omit<Notification, 'id' | 'createdAt'> = {

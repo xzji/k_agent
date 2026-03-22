@@ -156,6 +156,7 @@ export class CodingAgentLLMChannel {
   ): Promise<{
     content: string;
     usage?: { total_tokens: number };
+    finishReason?: string;
   }> {
     const startTime = Date.now();
     const goalId = options?.goalId as string | undefined;
@@ -179,6 +180,7 @@ export class CodingAgentLLMChannel {
 
       return {
         content: result.content,
+        finishReason: result.finishReason,
       };
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -400,7 +402,7 @@ export class CodingAgentExecutionPipeline {
       // Execute based on required tools
       const requiredTools = task.execution.requiredTools;
 
-      if (requiredTools.includes('web_search')) {
+      if (requiredTools.includes('websearch')) {
         // Use web search through the agent
         return await this.executeWithWebSearch(task, prompt, startTime);
       }
@@ -426,7 +428,7 @@ export class CodingAgentExecutionPipeline {
 ## Task Details
 Title: ${task.title}
 Description: ${task.description}
-Type: ${task.type}
+Execution: ${task.executionCycle}/${task.executionMode}
 Priority: ${task.priority}
 
 ## Expected Result
@@ -493,7 +495,7 @@ ${task.expectedResult ? JSON.stringify(task.expectedResult, null, 2) : 'No speci
 ${task.description}
 
 ### 执行结果
-- 任务类型: ${task.type}
+- 执行类型: ${task.executionCycle}/${task.executionMode}
 - 优先级: ${task.priority}
 - 执行时间: ${new Date().toLocaleString('zh-CN')}
 
@@ -526,7 +528,7 @@ ${task.description}
   private generateKeyPoints(task: Task): string[] {
     return [
       `完成${task.title}`,
-      `任务类型: ${task.type}`,
+      `执行类型: ${task.executionCycle}/${task.executionMode}`,
       `优先级: ${task.priority}`,
     ];
   }
@@ -612,7 +614,7 @@ export function generateKnowledgeFromTask(
         taskId: task.id,
         content: keyPoint,
         category: 'key_point',
-        tags: [task.type, task.priority],
+        tags: [task.executionCycle, task.executionMode, task.priority],
         importance: 0.8,
         relatedDimensionIds: task.dimensionId ? [task.dimensionId] : [],
         createdAt: Date.now(),

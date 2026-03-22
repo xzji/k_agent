@@ -79,6 +79,7 @@ import {
 // Background execution
 import { AgentPiBackgroundExecutor } from "./runtime/agent-pi-executor.js";
 import { initToolProvider } from "./runtime/tool-provider.js";
+import { getBackgroundSessionManager } from "./runtime/background-session.js";
 
 import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -158,6 +159,17 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   let currentWidgetData: GoalStatusWidgetData | null = null;
   let savedContext: ExtensionCommandContext | null = null;
   let carouselTimer: ReturnType<typeof setInterval> | null = null;
+
+  // ── Pending ask_user requests ──
+  // Maps toolCallId to request details for routing user responses
+  interface PendingAskUserRequest {
+    toolCallId: string;
+    sessionId: string;
+    question: string;
+    taskId?: string;
+    goalId?: string;
+  }
+  let pendingAskUserRequests = new Map<string, PendingAskUserRequest>();
 
   // ── Initialization state ──
   let initialized = false;
@@ -271,8 +283,9 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
     // Initialize Idle Detector (legacy version for compatibility)
     idleDetector = new IdleDetector({
-      idleThreshold: 30000, // 30 seconds default
-      checkInterval: 5000,
+      idleThreshold: 30000,     // 30 seconds - normal idle threshold
+      urgentThreshold: 30000,   // 30 seconds - same as idleThreshold for immediate notification delivery
+      checkInterval: 5000,      // 5 seconds - check interval
     });
 
     codingAgentIdleDetector = new CodingAgentIdleDetector(idleDetector);
@@ -385,7 +398,8 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       llmChannel,
       codingAgentIdleDetector,
       userProfile,
-      subGoalStore
+      subGoalStore,
+      uiLogger!
     );
 
     await orchestrator.init();
@@ -417,6 +431,36 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
         ) => {
           inputCtx.ui.notify(message, type);
         };
+
+        // ── Handle ask_user responses ──
+        // If there's a pending ask_user request, route the response to it
+        if (pendingAskUserRequests.size > 0) {
+          // Get the most recent pending request
+          const [toolCallId, pendingRequest] = Array.from(pendingAskUserRequests.entries()).pop()!;
+
+          if (pendingRequest) {
+            // Remove from pending
+            pendingAskUserRequests.delete(toolCallId);
+
+            // Route response to the session manager
+            const sessionManager = getBackgroundSessionManager();
+            if (sessionManager) {
+              sessionManager.resolveAskUserResponse(toolCallId, userResponse);
+
+              // Show user's response
+              pi.sendMessage({
+                customType: "user_response",
+                content: userResponse,
+                display: true,
+              });
+
+              notify("✅ 回复已发送到后台任务", "success");
+
+              // Don't continue processing this input through other handlers
+              return { action: "handled" as const };
+            }
+          }
+        }
 
         // Find the active goal based on orchestration phase priority
         const activeGoal = findActiveGoal(goals, (goalId) =>
@@ -637,7 +681,23 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
       }
     }
 
+    // 3.5. Track pending ask_user requests
+    // When ActionRequired log is emitted with toolCallId, track it for response routing
+    if (payload.source === 'ActionRequired' && payload.data?.toolCallId) {
+      const toolCallId = payload.data.toolCallId as string;
+      pendingAskUserRequests.set(toolCallId, {
+        toolCallId,
+        sessionId: payload.data.sessionId as string || '',
+        question: payload.message,
+        taskId: payload.taskId,
+        goalId: payload.goalId,
+      });
+    }
+
     // 4. Show important logs in foreground view
+    // Skip if backgroundOnly is set
+    if (payload.backgroundOnly) return;
+
     // Important logs are always displayed, regardless of uiLogLevel setting
     const isImportant = isImportantLog(payload);
     if (isImportant) {
@@ -1099,7 +1159,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
           output += `\n任务列表 (${tasks.length}):\n`;
           for (const task of tasks.slice(0, 10)) {
             const statusIcon = getTaskStatusIcon(task.status);
-            output += `  ${statusIcon} ${task.title} (${task.type})\n`;
+            output += `  ${statusIcon} ${task.title} (${task.executionCycle}/${task.executionMode})\n`;
           }
           if (tasks.length > 10) {
             output += `  ... 还有 ${tasks.length - 10} 个任务\n`;
@@ -1246,9 +1306,10 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
   // ── Helper functions ──
 
   async function deliverPendingNotifications(pi: ExtensionAPI) {
-    if (!notificationQueue || notificationQueue.pendingCount === 0) return;
+    const pendingCount = notificationQueue?.pendingCount ?? 0;
+    const hasUrgent = notificationQueue?.hasUrgent() ?? false;
 
-    const hasUrgent = notificationQueue.hasUrgent();
+    if (pendingCount === 0) return;
     if (!idleDetector?.isIdle(hasUrgent)) return;
 
     while (notificationQueue.pendingCount > 0) {
@@ -1396,7 +1457,7 @@ const goalDrivenExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 
         // Try to get elapsed time from executor
         output += `🔄 ${task.id.slice(0, 8)} | ${task.title}\n`;
-        output += `   类型: ${task.type} | 状态: ${task.status}\n\n`;
+        output += `   类型: ${task.executionCycle}/${task.executionMode} | 状态: ${task.status}\n\n`;
       }
 
       ctx.ui.notify(output, "info");

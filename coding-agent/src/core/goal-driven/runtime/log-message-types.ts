@@ -37,6 +37,8 @@ export interface BackgroundLogPayload {
   data?: Record<string, unknown>;
   /** Log category for filtering */
   category?: LogCategory;
+  /** Only show in background log view, never in foreground */
+  backgroundOnly?: boolean;
 }
 
 /**

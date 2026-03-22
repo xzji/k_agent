@@ -6,7 +6,6 @@
 
 import { now } from '../utils/index.js';
 import { logError } from '../utils/logger.js';
-import type { TaskType } from '../types/index.js';
 
 /**
  * 单条日志条目
@@ -42,8 +41,8 @@ export interface SessionLog {
   taskId: string;
   /** 目标 ID */
   goalId: string;
-  /** 任务类型 */
-  taskType: TaskType;
+  /** 任务类型（组合标签） */
+  taskType: string;
   /** 开始时间 */
   startTime: number;
   /** 结束时间 */
@@ -75,7 +74,7 @@ export class SessionLogWriter {
   /**
    * 开始新的会话日志
    */
-  startSession(sessionId: string, taskId: string, goalId: string, taskType: TaskType): void {
+  startSession(sessionId: string, taskId: string, goalId: string, taskType: string): void {
     this.logs.set(sessionId, {
       sessionId,
       taskId,

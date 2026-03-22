@@ -6,7 +6,7 @@
 
 当前 Goal-Driven Agent 的任务执行采用直接调用 ExecutionPipeline 的方式，仅使用 LLM 进行简单对话，无法充分利用 Agent Pi 的完整能力（工具调用、代码执行、文件操作等）。本方案设计一种后台执行架构，使任务能够：
 
-1. **复用 Agent Pi 完整能力**：包括所有工具（web_search、read、edit、bash 等）
+1. **复用 Agent Pi 完整能力**：包括所有工具（websearch、read、edit、bash 等）
 2. **后台异步执行**：不阻塞用户前端交互
 3. **结果通知**：执行完成后主动通知用户
 
@@ -635,7 +635,7 @@ export interface ExtensionAPI {
 ```typescript
 const TOOL_MAPPING: Record<string, string> = {
   // 基础工具
-  'web_search': 'web_search',
+  'websearch': 'websearch',
   'web_fetch': 'web_fetch',
   'read': 'read',
   'write': 'write',

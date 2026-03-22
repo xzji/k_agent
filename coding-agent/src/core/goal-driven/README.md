@@ -196,11 +196,14 @@ interface Task {
   id: string;
   goalId: string;
   dimensionId?: string;
-  parentTaskId?: string;
+  parentId?: string;
 
   title: string;
   description: string;
-  type: TaskType;
+  executionCycle: ExecutionCycle;  // 'once' | 'recurring'
+  executionMode: ExecutionMode;    // 'standard' | 'interactive' | 'monitoring' | 'event_triggered'
+  recurrence?: string;             // 周期频率描述
+  triggerCondition?: string;       // 触发条件描述
   priority: PriorityLevel;
   status: TaskStatus;
 
@@ -282,7 +285,7 @@ const goal = await goalStore.createGoal({
       name: 'Learning Resources',
       priority: 'high',
       infoNeeds: [{ description: 'Find best TypeScript courses' }],
-      sources: [{ type: 'web_search', config: {} }],
+      sources: [{ type: 'websearch', config: {} }],
     },
   ],
   successCriteria: [

@@ -79,7 +79,8 @@ export class ContextGatherer {
       goalId: goal.id,
       title: `Information gathering for: ${goal.title}`,
       description: 'Progressive information collection to better understand the goal',
-      type: 'interactive',
+      executionCycle: 'once',
+      executionMode: 'interactive',
       priority: 'high',
       status: 'waiting_user',
       execution: {

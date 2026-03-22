@@ -17,6 +17,28 @@ export type SubGoalStatus = 'pending' | 'active' | 'completed' | 'failed';
 export type CompletionRequirement = 'all' | 'any' | 'majority';
 
 /**
+ * 规划元数据 - 存储任务规划输出的结构化信息
+ */
+export interface PlanningMetadata {
+  analysis?: {
+    coreDeliverable: string;
+    workCategories: string[];
+    completionChecklist: string[];
+  };
+  executionPlan?: {
+    suggestedOrder: string[];
+    criticalPath: string[];
+    totalEstimatedHours: number;
+  };
+  coverageValidation?: {
+    isSufficient: boolean;
+    explanation: string;
+    uncoveredRisks: string[];
+  };
+  generatedAt: number;
+}
+
+/**
  * SubGoal - 子目标定义
  *
  * 位于 Goal 和 Task 之间的规划层，用于：
@@ -40,7 +62,7 @@ export interface SubGoal {
   dependencies: string[]; // 依赖的其他子目标ID
 
   // 执行时间
-  estimatedDuration?: number; // 预计耗时（小时）
+  estimatedDurationMinutes?: number; // 预计耗时（分钟）
   deadline?: number; // 截止时间
 
   // 关联的任务ID
@@ -48,6 +70,9 @@ export interface SubGoal {
 
   // 成功标准
   successCriteria: SuccessCriterion[];
+
+  // 规划元数据（新增）
+  planningMetadata?: PlanningMetadata;
 
   createdAt: number;
   updatedAt?: number;
@@ -110,6 +135,7 @@ export interface ISubGoalStore {
   addTaskToSubGoal(subGoalId: string, taskId: string): Promise<SubGoal>;
   removeTaskFromSubGoal(subGoalId: string, taskId: string): Promise<SubGoal>;
   updateProgress(subGoalId: string, progress: SubGoalProgress): Promise<SubGoal>;
+  updatePlanningMetadata(subGoalId: string, metadata: PlanningMetadata): Promise<void>;
   checkDependencies(subGoalId: string): Promise<{
     satisfied: boolean;
     blockingSubGoalIds: string[];

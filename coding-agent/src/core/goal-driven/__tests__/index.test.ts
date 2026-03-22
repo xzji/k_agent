@@ -10,7 +10,7 @@ import {
   KnowledgeStore,
   NotificationQueue,
 } from '../index';
-import { now, generateId } from '../utils';
+import { now, generateId, parseJSONFromLLM } from '../utils';
 
 // 使用内存存储进行测试
 const TEST_STORAGE = '/tmp/test-goal-driven';
@@ -29,7 +29,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '测试任务',
       description: '这是一个测试任务',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'high',
       status: 'ready',
       execution: {
@@ -59,7 +60,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '测试任务',
       description: '测试描述',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'medium',
       status: 'pending',
       execution: {
@@ -89,7 +91,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '就绪任务',
       description: '应该被选中',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'high',
       status: 'ready',
       execution: {
@@ -113,7 +116,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '阻塞任务',
       description: '不应该被选中',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'low',
       status: 'blocked',
       execution: {
@@ -143,7 +147,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '测试任务',
       description: '测试',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'medium',
       status: 'ready',
       execution: {
@@ -181,7 +186,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '待处理任务',
       description: 'pending',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'high',
       status: 'pending',
       execution: {
@@ -205,7 +211,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '就绪任务',
       description: 'ready',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'high',
       status: 'ready',
       execution: {
@@ -229,7 +236,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '执行中任务',
       description: 'in_progress',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'high',
       status: 'in_progress',
       execution: {
@@ -253,7 +261,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '已完成任务',
       description: 'completed',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'high',
       status: 'completed',
       execution: {
@@ -277,7 +286,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '失败任务',
       description: 'failed',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'high',
       status: 'failed',
       execution: {
@@ -301,7 +311,8 @@ describe('TaskStore', () => {
       goalId: 'goal-1',
       title: '已取消任务',
       description: 'cancelled',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'high',
       status: 'cancelled',
       execution: {
@@ -350,7 +361,8 @@ describe('TaskDependencyGraph', () => {
         goalId: 'goal-1',
         title: '任务1',
         description: '测试',
-        type: 'one_time' as const,
+        executionCycle: 'once' as const,
+        executionMode: 'standard' as const,
         priority: 'medium' as const,
         status: 'ready' as const,
         execution: {
@@ -375,7 +387,8 @@ describe('TaskDependencyGraph', () => {
         goalId: 'goal-1',
         title: '任务2',
         description: '测试',
-        type: 'one_time' as const,
+        executionCycle: 'once' as const,
+        executionMode: 'standard' as const,
         priority: 'medium' as const,
         status: 'blocked' as const,
         execution: {
@@ -410,7 +423,8 @@ describe('TaskDependencyGraph', () => {
         goalId: 'goal-1',
         title: '任务A',
         description: '测试',
-        type: 'one_time' as const,
+        executionCycle: 'once' as const,
+        executionMode: 'standard' as const,
         priority: 'medium' as const,
         status: 'ready' as const,
         execution: {
@@ -435,7 +449,8 @@ describe('TaskDependencyGraph', () => {
         goalId: 'goal-1',
         title: '任务B',
         description: '测试',
-        type: 'one_time' as const,
+        executionCycle: 'once' as const,
+        executionMode: 'standard' as const,
         priority: 'medium' as const,
         status: 'blocked' as const,
         execution: {
@@ -460,7 +475,8 @@ describe('TaskDependencyGraph', () => {
         goalId: 'goal-1',
         title: '任务C',
         description: '测试',
-        type: 'one_time' as const,
+        executionCycle: 'once' as const,
+        executionMode: 'standard' as const,
         priority: 'medium' as const,
         status: 'blocked' as const,
         execution: {
@@ -491,7 +507,8 @@ describe('TaskDependencyGraph', () => {
       goalId: 'goal-1',
       title: '任务1',
       description: '测试',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'medium',
       status: 'completed',
       execution: {
@@ -515,7 +532,8 @@ describe('TaskDependencyGraph', () => {
       goalId: 'goal-1',
       title: '任务2',
       description: '测试',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'medium',
       status: 'blocked',
       execution: {
@@ -544,7 +562,8 @@ describe('TaskDependencyGraph', () => {
       goalId: 'goal-1',
       title: '任务1',
       description: '测试',
-      type: 'one_time',
+      executionCycle: 'once',
+      executionMode: 'standard',
       priority: 'medium',
       status: 'ready',
       execution: {
@@ -840,5 +859,89 @@ describe('Utils', () => {
     expect(id1).toBeDefined();
     expect(id2).toBeDefined();
     expect(id1).not.toBe(id2);
+  });
+});
+
+describe('parseJSONFromLLM', () => {
+  it('应该解析有效的 JSON', () => {
+    const result = parseJSONFromLLM('{"key": "value"}');
+    expect(result).toEqual({ key: 'value' });
+  });
+
+  it('应该解析带 markdown 代码块的 JSON', () => {
+    const result = parseJSONFromLLM('```json\n{"key": "value"}\n```');
+    expect(result).toEqual({ key: 'value' });
+  });
+
+  it('应该解析带普通代码块的 JSON', () => {
+    const result = parseJSONFromLLM('```\n{"key": "value"}\n```');
+    expect(result).toEqual({ key: 'value' });
+  });
+
+  it('应该修复单引号字符串', () => {
+    const result = parseJSONFromLLM(`{"reasoning": '从"盲目刷题"转向"有效练习"'}`);
+    expect(result.reasoning).toBe('从"盲目刷题"转向"有效练习"');
+  });
+
+  it('应该处理字符串内转义的单引号', () => {
+    const result = parseJSONFromLLM(`{"text": 'it\\'s a test'}`);
+    expect(result.text).toBe("it's a test");
+  });
+
+  it('应该处理复杂的嵌套结构', () => {
+    const input = `{
+      "reviewResults": [
+        {
+          "taskId": "task-1",
+          "reasoning": '这是一个"重要"的任务',
+          "aligned": true
+        }
+      ]
+    }`;
+    const result = parseJSONFromLLM(input);
+    expect(result.reviewResults[0].reasoning).toBe('这是一个"重要"的任务');
+  });
+
+  it('应该在无效 JSON 时抛出错误', () => {
+    expect(() => parseJSONFromLLM('not valid json at all')).toThrow(SyntaxError);
+  });
+
+  it('应该修复截断的 JSON（缺少闭合括号）', () => {
+    const truncated = '{"key": "value"';
+    const result = parseJSONFromLLM(truncated, true);
+    expect(result).toEqual({ key: 'value' });
+  });
+
+  it('应该修复截断的嵌套 JSON', () => {
+    const truncated = '{"outer": {"inner": "value"';
+    const result = parseJSONFromLLM(truncated, true);
+    expect(result).toEqual({ outer: { inner: 'value' } });
+  });
+
+  it('应该修复截断的数组 JSON', () => {
+    const truncated = '{"items": [1, 2, 3';
+    const result = parseJSONFromLLM(truncated, true);
+    expect(result).toEqual({ items: [1, 2, 3] });
+  });
+
+  it('应该修复截断的字符串', () => {
+    const truncated = '{"text": "hello world';
+    const result = parseJSONFromLLM(truncated, true);
+    expect(result).toEqual({ text: 'hello world' });
+  });
+
+  it('应该自动检测并修复不完整的 JSON', () => {
+    // isTruncated=false 但 JSON 本身不完整时，应该自动检测并修复
+    const incomplete = '{"name": "test"';
+    const result = parseJSONFromLLM(incomplete, false);
+    expect(result).toEqual({ name: 'test' });
+  });
+
+  it('应该处理 finishReason=length 的情况', () => {
+    const truncated = '{"subGoals": [{"id": 1, "name": "first"}, {"id": 2, "name": "second"';
+    const result = parseJSONFromLLM(truncated, true);
+    expect(result.subGoals).toHaveLength(2);
+    expect(result.subGoals[0].name).toBe('first');
+    expect(result.subGoals[1].name).toBe('second');
   });
 });

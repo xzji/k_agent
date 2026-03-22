@@ -150,6 +150,186 @@ export async function retry<T>(
 }
 
 /**
+ * Fix single-quoted strings in JSON
+ *
+ * Converts 'string' to "string", handling:
+ * - Internal double quotes (escaped)
+ * - Escaped single quotes (unescaped)
+ */
+function fixSingleQuoteStrings(json: string): string {
+  return json.replace(
+    /'([^'\\]*(\\.[^'\\]*)*)'/g,
+    (match, content) => {
+      // Escape internal double quotes
+      const escaped = content.replace(/"/g, '\\"');
+      // Unescape single quotes
+      const unescaped = escaped.replace(/\\'/g, "'");
+      return `"${unescaped}"`;
+    }
+  );
+}
+
+/**
+ * Check if JSON string is likely truncated
+ */
+export function isLikelyTruncated(jsonStr: string): boolean {
+  // Check for common truncation indicators
+  const openBraces = (jsonStr.match(/\{/g) || []).length;
+  const closeBraces = (jsonStr.match(/\}/g) || []).length;
+  const openBrackets = (jsonStr.match(/\[/g) || []).length;
+  const closeBrackets = (jsonStr.match(/\]/g) || []).length;
+
+  // If braces/brackets don't match, it's likely truncated
+  return openBraces !== closeBraces || openBrackets !== closeBrackets;
+}
+
+/**
+ * Attempt to fix truncated JSON by closing open structures
+ */
+export function attemptToFixTruncatedJSON(jsonStr: string): string | null {
+  let fixed = jsonStr.trim();
+
+  // Remove trailing commas
+  fixed = fixed.replace(/,\s*$/, '');
+  fixed = fixed.replace(/,\s*([}\]])/g, '$1');
+
+  // Track open structures using a stack for correct closing order
+  const openStack: ('{' | '[')[] = [];
+  let inString = false;
+  let escapeNext = false;
+
+  for (const char of fixed) {
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (char === '\\') {
+      escapeNext = true;
+      continue;
+    }
+    if (char === '"' && !escapeNext) {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (char === '{') {
+        openStack.push('{');
+      } else if (char === '[') {
+        openStack.push('[');
+      } else if (char === '}') {
+        // Pop matching '{' if available
+        const lastOpen = openStack[openStack.length - 1];
+        if (lastOpen === '{') {
+          openStack.pop();
+        }
+      } else if (char === ']') {
+        // Pop matching '[' if available
+        const lastOpen = openStack[openStack.length - 1];
+        if (lastOpen === '[') {
+          openStack.pop();
+        }
+      }
+    }
+  }
+
+  // Close any open strings
+  if (inString) {
+    fixed += '"';
+  }
+
+  // Check for incomplete key-value pairs
+  const lastColon = fixed.lastIndexOf(':');
+  const lastComma = fixed.lastIndexOf(',');
+  const lastOpenBrace = fixed.lastIndexOf('{');
+  const lastOpenBracket = fixed.lastIndexOf('[');
+
+  // If we have an open brace without a value after the last colon, add null
+  if (lastColon > lastOpenBrace && lastColon > lastComma && lastColon > lastOpenBracket) {
+    const afterColon = fixed.slice(lastColon + 1).trim();
+    if (!afterColon || afterColon === '') {
+      fixed += ' null';
+    }
+  }
+
+  // Close structures in reverse order (LIFO - last opened, first closed)
+  while (openStack.length > 0) {
+    const lastOpen = openStack.pop()!;
+    if (lastOpen === '{') {
+      fixed += '}';
+    } else {
+      fixed += ']';
+    }
+  }
+
+  try {
+    JSON.parse(fixed);
+    return fixed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse JSON from LLM output, handling common formatting issues
+ *
+ * Handles:
+ * - Markdown code block markers (```json ... ```)
+ * - Single-quoted strings (LLM sometimes uses ' instead of ")
+ * - Truncated JSON (when isTruncated is true or JSON is incomplete)
+ *
+ * @param content - The LLM output content
+ * @param isTruncated - Whether the LLM response was truncated (finishReason === 'length')
+ * @throws SyntaxError if parsing fails after repair attempts
+ */
+export function parseJSONFromLLM<T>(content: string, isTruncated: boolean = false): T {
+  let cleaned = content.trim();
+
+  // Step 1: Remove markdown code block markers
+  if (cleaned.startsWith('```json')) {
+    cleaned = cleaned.slice(7);
+  } else if (cleaned.startsWith('```')) {
+    cleaned = cleaned.slice(3);
+  }
+  if (cleaned.endsWith('```')) {
+    cleaned = cleaned.slice(0, -3);
+  }
+  cleaned = cleaned.trim();
+
+  // Step 2: Try parsing directly
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    // Continue to repair attempt
+  }
+
+  // Step 3: Try fixing single-quoted strings
+  const fixedSingleQuotes = fixSingleQuoteStrings(cleaned);
+  try {
+    return JSON.parse(fixedSingleQuotes) as T;
+  } catch {
+    // Continue to truncation repair
+  }
+
+  // Step 4: If truncated or appears truncated, try to fix incomplete JSON
+  if (isTruncated || isLikelyTruncated(fixedSingleQuotes)) {
+    const fixed = attemptToFixTruncatedJSON(fixedSingleQuotes);
+    if (fixed) {
+      try {
+        return JSON.parse(fixed) as T;
+      } catch {
+        // Fall through to final error
+      }
+    }
+  }
+
+  // Final failure with descriptive error
+  throw new SyntaxError(
+    `Failed to parse JSON from LLM output after repair attempts. ` +
+    `Content preview: ${cleaned.slice(0, 200)}${cleaned.length > 200 ? '...' : ''}`
+  );
+}
+
+/**
  * Semaphore for concurrency control
  */
 export class Semaphore {

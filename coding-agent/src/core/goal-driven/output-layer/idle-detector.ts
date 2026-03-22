@@ -127,14 +127,23 @@ export class IdleDetector {
 	}
 
 	/**
+	 * Check if agent is currently busy
+	 */
+	isAgentBusy(): boolean {
+		return this.agentBusy;
+	}
+
+	/**
 	 * Internal check — fires the idle callback if conditions are met
 	 */
 	private checkIdle(): void {
 		if (!this.onIdleCallback) return;
 
+		const isIdleResult = this.isIdle();
+
 		// Check with both thresholds — if urgent notifications exist,
 		// the caller needs to pass that info through isIdle()
-		if (this.isIdle()) {
+		if (isIdleResult) {
 			this.onIdleCallback();
 		}
 	}

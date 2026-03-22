@@ -9,15 +9,18 @@
 
 import {
   type Task,
-  type TaskType,
+  type ExecutionCycle,
+  type ExecutionMode,
   type TaskHierarchyLevel,
   type TaskExpectedResult,
   type PriorityLevel,
   type ITaskStore,
   type SubGoal,
   type ISubGoalStore,
+  type PlanningMetadata,
 } from '../types';
 import { logError } from '../utils/logger';
+import { parseJSONFromLLM } from '../utils';
 
 /**
  * Task review result
@@ -57,6 +60,7 @@ const GENERATE_TASKS_PROMPT = `请为以下子目标生成具体的执行任务�
 
 子目标: {{subGoalName}}
 描述: {{subGoalDescription}}
+完成标准: {{subGoalCriteria}}
 所属目标: {{goalTitle}}
 用户背景: {{userContext}}
 
@@ -64,27 +68,49 @@ const GENERATE_TASKS_PROMPT = `请为以下子目标生成具体的执行任务�
 1. 每个任务应该是具体可执行的
 2. 明确每个任务的预期产出
 3. 任务优先级要合理
-4. 任务类型：exploration(探索), one_time(一次性), recurring(周期性), interactive(交互式), monitoring(监控), event_triggered(事件触发)
-5. 任务层级：task(任务) | sub_task(子任务) | action(最小执行单元)
+4. 执行周期(execution_cycle): once(执行一次) | recurring(周期执行)
+5. 执行模式(execution_mode): standard(标准) | interactive(需用户交互) | monitoring(持续监控) | event_triggered(事件触发)
+6. 任务层级：task(任务) | sub_task(子任务) | action(最小执行单元)
 
 请按JSON格式返回：
 {
+  "sub_goal_analysis": {
+    "core_deliverable": "核心交付物描述",
+    "work_categories": ["分类1", "分类2"],
+    "completion_checklist": ["检查项1", "检查项2"]
+  },
   "tasks": [
     {
+      "id": "task-1",
       "title": "任务标题",
       "description": "详细描述",
-      "type": "exploration|one_time|recurring|interactive|monitoring|event_triggered",
-      "hierarchyLevel": "task|sub_task|action",
+      "execution_cycle": "once|recurring",
+      "execution_mode": "standard|interactive|monitoring|event_triggered",
+      "recurrence": "周期频率描述(仅recurring需要)",
+      "trigger_condition": "触发条件描述(仅event_triggered需要)",
+      "hierarchy_level": "task|sub_task|action",
+      "parent_id": "父任务ID(可选)",
       "priority": "critical|high|medium|low",
-      "expectedResult": {
+      "dependencies": ["依赖任务ID"],
+      "expected_output": {
         "type": "information|deliverable|decision|action|confirmation",
         "description": "预期产出描述",
-        "format": "json|markdown|table|text|code"
+        "format": "json|markdown|table|text|code|other",
+        "completion_criteria": "完成判定标准"
       },
-      "estimatedDuration": 60
+      "estimated_duration_minutes": 60
     }
   ],
-  "reasoning": "任务规划理由"
+  "execution_plan": {
+    "suggested_order": ["task-1", "task-2"],
+    "critical_path": ["关键路径任务ID"],
+    "total_estimated_hours": 8
+  },
+  "coverage_validation": {
+    "is_sufficient": true,
+    "explanation": "覆盖度说明",
+    "uncovered_risks": ["未覆盖风险1"]
+  }
 }`;
 
 /**
@@ -137,6 +163,7 @@ export class TaskPlanner {
       goalTitle: string;
       goalDescription?: string;
       userContext: Record<string, unknown>;
+      subGoalCriteria?: { id: string; description: string; type: string; completed: boolean }[];
     },
     options: TaskGenerationOptions = {}
   ): Promise<Task[]> {
@@ -145,9 +172,14 @@ export class TaskPlanner {
       throw new Error(`SubGoal not found: ${subGoalId}`);
     }
 
+    const criteriaText = goalContext.subGoalCriteria
+      ? goalContext.subGoalCriteria.map(c => `- ${c.description}`).join('\n')
+      : '无明确标准';
+
     const prompt = GENERATE_TASKS_PROMPT
       .replace('{{subGoalName}}', subGoal.name)
       .replace('{{subGoalDescription}}', subGoal.description)
+      .replace('{{subGoalCriteria}}', criteriaText)
       .replace('{{goalTitle}}', goalContext.goalTitle)
       .replace('{{userContext}}', JSON.stringify(goalContext.userContext, null, 2));
 
@@ -157,20 +189,41 @@ export class TaskPlanner {
     });
 
     let taskData: {
+      sub_goal_analysis?: {
+        core_deliverable: string;
+        work_categories: string[];
+        completion_checklist: string[];
+      };
       tasks: Array<{
+        id: string;
         title: string;
         description: string;
-        type: string;
-        hierarchyLevel: string;
+        execution_cycle: string;
+        execution_mode: string;
+        recurrence?: string;
+        trigger_condition?: string;
+        hierarchy_level?: string;
+        parent_id?: string;
         priority: string;
-        expectedResult: {
+        dependencies: string[];
+        expected_output: {
           type: string;
           description: string;
           format: string;
+          completion_criteria?: string;
         };
-        estimatedDuration?: number;
+        estimated_duration_minutes?: number;
       }>;
-      reasoning: string;
+      execution_plan?: {
+        suggested_order: string[];
+        critical_path: string[];
+        total_estimated_hours: number;
+      };
+      coverage_validation?: {
+        is_sufficient: boolean;
+        explanation: string;
+        uncovered_risks: string[];
+      };
     };
 
     try {
@@ -182,8 +235,34 @@ export class TaskPlanner {
       return this.createDefaultTasks(subGoal, goalContext);
     }
 
+    // Store planning metadata to SubGoal
+    if (taskData.sub_goal_analysis || taskData.execution_plan || taskData.coverage_validation) {
+      const planningMetadata: PlanningMetadata = {
+        analysis: taskData.sub_goal_analysis ? {
+          coreDeliverable: taskData.sub_goal_analysis.core_deliverable,
+          workCategories: taskData.sub_goal_analysis.work_categories,
+          completionChecklist: taskData.sub_goal_analysis.completion_checklist,
+        } : undefined,
+        executionPlan: taskData.execution_plan ? {
+          suggestedOrder: taskData.execution_plan.suggested_order,
+          criticalPath: taskData.execution_plan.critical_path,
+          totalEstimatedHours: taskData.execution_plan.total_estimated_hours,
+        } : undefined,
+        coverageValidation: taskData.coverage_validation ? {
+          isSufficient: taskData.coverage_validation.is_sufficient,
+          explanation: taskData.coverage_validation.explanation,
+          uncoveredRisks: taskData.coverage_validation.uncovered_risks,
+        } : undefined,
+        generatedAt: Date.now(),
+      };
+      await this.subGoalStore.updatePlanningMetadata(subGoalId, planningMetadata);
+    }
+
     const maxTasks = options.maxTasks || 10;
     const tasksToCreate = taskData.tasks.slice(0, maxTasks);
+
+    // Build task ID mapping for parent_id resolution
+    const taskIdMapping = new Map<string, string>();
 
     const createdTasks: Task[] = [];
 
@@ -191,12 +270,42 @@ export class TaskPlanner {
       const task = await this.createTaskFromDefinition(
         subGoal,
         taskDef,
-        options.defaultHierarchyLevel || 'task'
+        options.defaultHierarchyLevel || 'task',
+        taskIdMapping
       );
       createdTasks.push(task);
 
+      // Store the mapping from temp ID to real ID
+      if (taskDef.id) {
+        taskIdMapping.set(taskDef.id, task.id);
+      }
+
       // Add task to sub-goal
       await this.subGoalStore.addTaskToSubGoal(subGoalId, task.id);
+    }
+
+    // Update parent_id references if needed
+    for (const task of createdTasks) {
+      if (task.parentId && taskIdMapping.has(task.parentId)) {
+        await this.taskStore.updateTask(task.id, {
+          parentId: taskIdMapping.get(task.parentId)
+        });
+      }
+    }
+
+    // Update dependencies references if needed
+    for (const task of createdTasks) {
+      if (task.dependencies && task.dependencies.length > 0) {
+        const updatedDeps = task.dependencies.map(depId =>
+          taskIdMapping.get(depId) || depId
+        );
+        // Only update if there are changes
+        if (updatedDeps.some((dep, i) => dep !== task.dependencies![i])) {
+          await this.taskStore.updateTask(task.id, {
+            dependencies: updatedDeps
+          });
+        }
+      }
     }
 
     return createdTasks;
@@ -213,10 +322,11 @@ export class TaskPlanner {
       {
         title: `完成${subGoal.name}相关任务`,
         description: subGoal.description,
-        type: 'one_time',
+        executionCycle: 'once' as ExecutionCycle,
+        executionMode: 'standard' as ExecutionMode,
         hierarchyLevel: 'task' as TaskHierarchyLevel,
         priority: 'high' as PriorityLevel,
-        expectedResult: {
+        expectedOutput: {
           type: 'deliverable' as const,
           description: `完成${subGoal.name}`,
           format: 'text' as const,
@@ -226,7 +336,21 @@ export class TaskPlanner {
 
     const created: Task[] = [];
     for (const def of defaults) {
-      const task = await this.createTaskFromDefinition(subGoal, def, 'task');
+      const task = await this.createTaskFromDefinition(subGoal, {
+        id: 'default-1',
+        title: def.title,
+        description: def.description,
+        execution_cycle: def.executionCycle,
+        execution_mode: def.executionMode,
+        hierarchy_level: def.hierarchyLevel,
+        priority: def.priority,
+        dependencies: [],
+        expected_output: {
+          type: def.expectedOutput.type,
+          description: def.expectedOutput.description,
+          format: def.expectedOutput.format,
+        },
+      }, 'task', new Map());
       created.push(task);
       await this.subGoalStore.addTaskToSubGoal(subGoal.id, task.id);
     }
@@ -240,50 +364,69 @@ export class TaskPlanner {
   private async createTaskFromDefinition(
     subGoal: SubGoal,
     def: {
+      id: string;
       title: string;
       description: string;
-      type: string;
-      hierarchyLevel?: string;
+      execution_cycle: string;
+      execution_mode: string;
+      recurrence?: string;
+      trigger_condition?: string;
+      hierarchy_level?: string;
+      parent_id?: string;
       priority: string;
-      expectedResult: {
+      dependencies: string[];
+      expected_output: {
         type: string;
         description: string;
         format: string;
+        completion_criteria?: string;
       };
-      estimatedDuration?: number;
+      estimated_duration_minutes?: number;
     },
-    defaultHierarchyLevel: TaskHierarchyLevel
+    defaultHierarchyLevel: TaskHierarchyLevel,
+    taskIdMapping: Map<string, string>
   ): Promise<Task> {
-    const validTypes: TaskType[] = [
-      'exploration',
-      'one_time',
-      'recurring',
-      'interactive',
-      'monitoring',
-      'event_triggered',
-    ];
+    const validCycles: ExecutionCycle[] = ['once', 'recurring'];
+    const validModes: ExecutionMode[] = ['standard', 'interactive', 'monitoring', 'event_triggered'];
 
-    const taskType = validTypes.includes(def.type as TaskType)
-      ? (def.type as TaskType)
-      : 'one_time';
+    const executionCycle: ExecutionCycle = validCycles.includes(def.execution_cycle as ExecutionCycle)
+      ? (def.execution_cycle as ExecutionCycle)
+      : 'once';
+
+    const executionMode: ExecutionMode = validModes.includes(def.execution_mode as ExecutionMode)
+      ? (def.execution_mode as ExecutionMode)
+      : 'standard';
 
     const hierarchyLevel: TaskHierarchyLevel =
-      def.hierarchyLevel === 'sub_task' || def.hierarchyLevel === 'action'
-        ? def.hierarchyLevel
+      def.hierarchy_level === 'sub_task' || def.hierarchy_level === 'action'
+        ? def.hierarchy_level
         : defaultHierarchyLevel;
 
+    // Resolve parent_id from temp ID to real ID if available
+    let parentId = def.parent_id;
+    if (parentId && taskIdMapping.has(parentId)) {
+      parentId = taskIdMapping.get(parentId);
+    }
+
     const expectedResult: TaskExpectedResult = {
-      type: def.expectedResult.type as TaskExpectedResult['type'],
-      description: def.expectedResult.description,
-      format: def.expectedResult.format as TaskExpectedResult['format'],
+      type: def.expected_output.type as TaskExpectedResult['type'],
+      description: def.expected_output.description,
+      format: def.expected_output.format as TaskExpectedResult['format'],
+      validationCriteria: def.expected_output.completion_criteria
+        ? [def.expected_output.completion_criteria]
+        : undefined,
     };
 
     const taskData: Omit<Task, 'id' | 'createdAt'> = {
       goalId: subGoal.goalId,
       subGoalId: subGoal.id,
+      parentId,
       title: def.title,
       description: def.description,
-      type: taskType,
+      executionCycle,
+      executionMode,
+      recurrence: def.recurrence,
+      triggerCondition: def.trigger_condition,
       priority: this.validatePriority(def.priority),
       status: 'awaiting_confirmation',
       hierarchyLevel,
@@ -291,17 +434,18 @@ export class TaskPlanner {
         agentPrompt: `${def.title}: ${def.description}`,
         requiredTools: [],
         requiredContext: [],
+        estimatedDurationMinutes: def.estimated_duration_minutes,
         capabilityMode: 'composite',
       },
       expectedResult,
       adaptiveConfig: {
         canAdjustDifficulty: false,
-        canAdjustFrequency: taskType === 'recurring',
+        canAdjustFrequency: executionCycle === 'recurring',
         successThreshold: 0.5,
         executionHistory: [],
       },
       relatedKnowledgeIds: [],
-      dependencies: [],
+      dependencies: def.dependencies || [],
       executionHistory: [],
     };
 
@@ -352,7 +496,17 @@ export class TaskPlanner {
     };
 
     try {
-      reviewData = JSON.parse(response.content);
+      const isTruncated = response.finishReason === 'length';
+      reviewData = parseJSONFromLLM<{
+        reviewResults: Array<{
+          taskId: string;
+          goalContribution: string;
+          subGoalContribution: string;
+          aligned: boolean;
+          reasoning: string;
+          suggestions?: string[];
+        }>;
+      }>(response.content, isTruncated);
     } catch (error) {
       const goalId = tasks[0]?.goalId;
       await logError(error instanceof Error ? error : String(error), 'task_review', goalId);

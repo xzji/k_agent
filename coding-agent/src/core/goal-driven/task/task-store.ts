@@ -394,9 +394,9 @@ export class TaskStore implements ITaskStore {
   /**
    * Get child tasks of a parent task
    */
-  async getChildTasks(parentTaskId: string): Promise<Task[]> {
+  async getChildTasks(parentId: string): Promise<Task[]> {
     const allTasks = await this.getAllTasks();
-    return deepClone(allTasks.filter((t) => t.parentTaskId === parentTaskId));
+    return deepClone(allTasks.filter((t) => t.parentId === parentId));
   }
 
   /**

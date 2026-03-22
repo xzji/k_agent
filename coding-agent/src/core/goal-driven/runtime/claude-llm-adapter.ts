@@ -138,7 +138,7 @@ export class ClaudeLLMChannel {
           priority: 'high',
           weight: 0.2,
           dependencies: [],
-          estimatedDuration: 4,
+          estimatedDurationMinutes: 240,
           successCriteria: [{ description: '完成需求清单', type: 'deliverable' }],
         },
         {
@@ -147,7 +147,7 @@ export class ClaudeLLMChannel {
           priority: 'high',
           weight: 0.35,
           dependencies: [],
-          estimatedDuration: 12,
+          estimatedDurationMinutes: 720,
           successCriteria: [{ description: '筛选3-5个候选', type: 'deliverable' }],
         },
         {
@@ -156,7 +156,7 @@ export class ClaudeLLMChannel {
           priority: 'medium',
           weight: 0.25,
           dependencies: [],
-          estimatedDuration: 8,
+          estimatedDurationMinutes: 480,
           successCriteria: [{ description: '完成对比分析', type: 'deliverable' }],
         },
         {
@@ -165,7 +165,7 @@ export class ClaudeLLMChannel {
           priority: 'high',
           weight: 0.2,
           dependencies: [],
-          estimatedDuration: 4,
+          estimatedDurationMinutes: 240,
           successCriteria: [{ description: '完成购买', type: 'deliverable' }],
         },
       ];
@@ -179,7 +179,7 @@ export class ClaudeLLMChannel {
           priority: 'high',
           weight: 0.15,
           dependencies: [],
-          estimatedDuration: 4,
+          estimatedDurationMinutes: 240,
           successCriteria: [{ description: '完成水平评估', type: 'condition' }],
         },
         {
@@ -188,7 +188,7 @@ export class ClaudeLLMChannel {
           priority: 'high',
           weight: 0.25,
           dependencies: [],
-          estimatedDuration: 8,
+          estimatedDurationMinutes: 480,
           successCriteria: [{ description: '完成资料整理', type: 'deliverable' }],
         },
         {
@@ -197,7 +197,7 @@ export class ClaudeLLMChannel {
           priority: 'high',
           weight: 0.2,
           dependencies: [],
-          estimatedDuration: 4,
+          estimatedDurationMinutes: 240,
           successCriteria: [{ description: '完成学习计划', type: 'deliverable' }],
         },
         {
@@ -206,7 +206,7 @@ export class ClaudeLLMChannel {
           priority: 'high',
           weight: 0.25,
           dependencies: [],
-          estimatedDuration: 40,
+          estimatedDurationMinutes: 2400,
           successCriteria: [{ description: '完成所有学习内容', type: 'condition' }],
         },
         {
@@ -215,7 +215,7 @@ export class ClaudeLLMChannel {
           priority: 'medium',
           weight: 0.15,
           dependencies: [],
-          estimatedDuration: 12,
+          estimatedDurationMinutes: 720,
           successCriteria: [{ description: '参加考试', type: 'deliverable' }],
         },
       ];
@@ -229,7 +229,7 @@ export class ClaudeLLMChannel {
           priority: 'high',
           weight: 0.25,
           dependencies: [],
-          estimatedDuration: 6,
+          estimatedDurationMinutes: 360,
           successCriteria: [{ description: '确定行程安排', type: 'deliverable' }],
         },
         {
@@ -238,7 +238,7 @@ export class ClaudeLLMChannel {
           priority: 'high',
           weight: 0.35,
           dependencies: [],
-          estimatedDuration: 8,
+          estimatedDurationMinutes: 480,
           successCriteria: [{ description: '完成预订', type: 'deliverable' }],
         },
         {
@@ -247,7 +247,7 @@ export class ClaudeLLMChannel {
           priority: 'medium',
           weight: 0.25,
           dependencies: [],
-          estimatedDuration: 8,
+          estimatedDurationMinutes: 480,
           successCriteria: [{ description: '完成攻略整理', type: 'deliverable' }],
         },
         {
@@ -256,7 +256,7 @@ export class ClaudeLLMChannel {
           priority: 'medium',
           weight: 0.15,
           dependencies: [],
-          estimatedDuration: 2,
+          estimatedDurationMinutes: 120,
           successCriteria: [{ description: '完成准备', type: 'condition' }],
         },
       ];
@@ -270,7 +270,7 @@ export class ClaudeLLMChannel {
         priority: 'high',
         weight: 0.25,
         dependencies: [],
-        estimatedDuration: 8,
+        estimatedDurationMinutes: 480,
         successCriteria: [{ description: '完成信息整理', type: 'deliverable' }],
       },
       {
@@ -279,7 +279,7 @@ export class ClaudeLLMChannel {
         priority: 'high',
         weight: 0.35,
         dependencies: [],
-        estimatedDuration: 12,
+        estimatedDurationMinutes: 720,
         successCriteria: [{ description: '完成方案', type: 'deliverable' }],
       },
       {
@@ -288,7 +288,7 @@ export class ClaudeLLMChannel {
         priority: 'high',
         weight: 0.3,
         dependencies: [],
-        estimatedDuration: 20,
+        estimatedDurationMinutes: 1200,
         successCriteria: [{ description: '完成执行', type: 'condition' }],
       },
       {
@@ -297,7 +297,7 @@ export class ClaudeLLMChannel {
         priority: 'low',
         weight: 0.1,
         dependencies: [],
-        estimatedDuration: 4,
+        estimatedDurationMinutes: 240,
         successCriteria: [{ description: '完成复盘', type: 'deliverable' }],
       },
     ];
@@ -331,7 +331,8 @@ export class ClaudeLLMChannel {
         {
           title: `搜索${subGoalName}相关信息`,
           description: `全面搜索${subGoalName}的相关信息`,
-          type: 'exploration',
+          execution_cycle: 'once',
+          execution_mode: 'standard',
           hierarchyLevel: 'task',
           priority: 'high',
           expectedResult: {
@@ -339,12 +340,13 @@ export class ClaudeLLMChannel {
             description: '相关信息汇总',
             format: 'markdown',
           },
-          estimatedDuration: 60,
+          estimatedDurationMinutes: 60,
         },
         {
           title: '整理收集的信息',
           description: '对收集的信息进行分类整理',
-          type: 'one_time',
+          execution_cycle: 'once',
+          execution_mode: 'standard',
           hierarchyLevel: 'sub_task',
           priority: 'medium',
           expectedResult: {
@@ -352,7 +354,7 @@ export class ClaudeLLMChannel {
             description: '信息整理文档',
             format: 'markdown',
           },
-          estimatedDuration: 30,
+          estimatedDurationMinutes: 30,
         },
       ];
     }
@@ -362,7 +364,8 @@ export class ClaudeLLMChannel {
         {
           title: '制定评估标准',
           description: '确定对比评估的各项标准',
-          type: 'interactive',
+          execution_cycle: 'once',
+          execution_mode: 'interactive',
           hierarchyLevel: 'task',
           priority: 'high',
           expectedResult: {
@@ -370,12 +373,13 @@ export class ClaudeLLMChannel {
             description: '评估标准清单',
             format: 'json',
           },
-          estimatedDuration: 20,
+          estimatedDurationMinutes: 20,
         },
         {
           title: '逐项对比分析',
           description: '按标准逐项对比各选项',
-          type: 'exploration',
+          execution_cycle: 'once',
+          execution_mode: 'standard',
           hierarchyLevel: 'task',
           priority: 'high',
           expectedResult: {
@@ -383,7 +387,7 @@ export class ClaudeLLMChannel {
             description: '对比分析结果',
             format: 'table',
           },
-          estimatedDuration: 45,
+          estimatedDurationMinutes: 45,
         },
       ];
     }
@@ -393,7 +397,8 @@ export class ClaudeLLMChannel {
         {
           title: '整理决策依据',
           description: '汇总支持决策的关键信息',
-          type: 'one_time',
+          execution_cycle: 'once',
+          execution_mode: 'standard',
           hierarchyLevel: 'task',
           priority: 'high',
           expectedResult: {
@@ -401,12 +406,13 @@ export class ClaudeLLMChannel {
             description: '决策依据汇总',
             format: 'markdown',
           },
-          estimatedDuration: 30,
+          estimatedDurationMinutes: 30,
         },
         {
           title: '做出最终决策',
           description: '基于分析结果做出最终选择',
-          type: 'interactive',
+          execution_cycle: 'once',
+          execution_mode: 'interactive',
           hierarchyLevel: 'task',
           priority: 'critical',
           expectedResult: {
@@ -414,7 +420,7 @@ export class ClaudeLLMChannel {
             description: '最终决策结果',
             format: 'text',
           },
-          estimatedDuration: 20,
+          estimatedDurationMinutes: 20,
         },
       ];
     }
@@ -424,7 +430,8 @@ export class ClaudeLLMChannel {
       {
         title: `${subGoalName} - 信息收集`,
         description: `收集${subGoalName}所需的信息`,
-        type: 'exploration',
+        execution_cycle: 'once',
+        execution_mode: 'standard',
         hierarchyLevel: 'task',
         priority: 'high',
         expectedResult: {
@@ -432,12 +439,13 @@ export class ClaudeLLMChannel {
           description: '收集的信息',
           format: 'markdown',
         },
-        estimatedDuration: 60,
+        estimatedDurationMinutes: 60,
       },
       {
         title: `${subGoalName} - 执行行动`,
         description: `执行${subGoalName}的具体行动`,
-        type: 'one_time',
+        execution_cycle: 'once',
+        execution_mode: 'standard',
         hierarchyLevel: 'task',
         priority: 'high',
         expectedResult: {
@@ -445,7 +453,7 @@ export class ClaudeLLMChannel {
           description: '行动结果',
           format: 'text',
         },
-        estimatedDuration: 60,
+        estimatedDurationMinutes: 60,
       },
     ];
   }
@@ -507,7 +515,7 @@ export class ClaudeLLMChannel {
     const goalTitle = goalMatch ? goalMatch[1].trim() : '目标';
 
     return {
-      summary: `计划通过${this.extractNumber(prompt, '子目标')}个子目标来完成"${goalTitle}"，预计总耗时${this.extractNumber(prompt, 'estimatedDuration')}小时。`,
+      summary: `计划通过${this.extractNumber(prompt, '子目标')}个子目标来完成"${goalTitle}"，预计总耗时${Math.round(this.extractNumber(prompt, 'estimatedDurationMinutes') / 60)}小时。`,
     };
   }
 
@@ -658,11 +666,9 @@ export class LocalExecutionPipeline {
   }
 
   private generateOutput(task: Task): string {
-    const taskType = task.type;
+    const executionMode = task.executionMode;
 
-    switch (taskType) {
-      case 'exploration':
-        return this.generateExplorationOutput(task);
+    switch (executionMode) {
       case 'interactive':
         return `等待用户输入以继续${task.title}`;
       case 'monitoring':

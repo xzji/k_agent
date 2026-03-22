@@ -596,7 +596,7 @@ export default function (pi: ExtensionAPI) {
                 status: "ready" as TaskStatus,
                 execution: {
                   agentPrompt: "Search for information about: " + goal.description,
-                  requiredTools: ["web_search"],
+                  requiredTools: ["websearch"],
                   requiredContext: [],
                   capabilityMode: "composite",
                 },
